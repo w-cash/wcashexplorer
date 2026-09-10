@@ -1,0 +1,44 @@
+[Unit]
+Description=Wcash Testnet explorer web interface
+Documentation=https://github.com/w-cash/wcashexplorer
+Wants=network-online.target
+After=network-online.target wcashexplorer-testnet.service
+
+[Service]
+Type=simple
+User=wcashexplorer-web
+Group=wcashexplorer-web
+WorkingDirectory=/opt/wcashexplorer-web/current
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3001
+ExecStart=/opt/wcashexplorer-web/node/bin/node /opt/wcashexplorer-web/current/server.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=20s
+UMask=0027
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

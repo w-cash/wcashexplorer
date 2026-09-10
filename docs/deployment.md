@@ -62,6 +62,17 @@ npm run lint
 npm run build
 ```
 
+For the documented single-host Testnet topology, build Vinext's self-contained
+Node artifact instead:
+
+```sh
+WCASH_EXPLORER_STANDALONE=true npm run build
+test -f dist/standalone/server.js
+```
+
+The default build remains the Cloudflare Worker artifact. Do not mix the two
+outputs in one release directory.
+
 Keep the web and API revisions together in release metadata so an operator can
 identify exactly which pair is running.
 

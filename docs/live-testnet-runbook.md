@@ -84,3 +84,54 @@ EXPLORER_DEV_API_PROXY=http://127.0.0.1:18080 npm run dev -- --port 3001
 Do not publish the service until readiness, pagination, missing-record responses,
 and privacy labels have been checked against live data. Public ingress should use
 TLS, explicit rate limits, and same-origin `/api/*` proxying.
+
+## Install the public web artifact
+
+Build a self-contained web release from the same reviewed Git revision as the
+Rust API. Keep preview mode disabled and preserve same-origin API URLs:
+
+```sh
+cd web
+npm ci
+npm run lint
+WCASH_EXPLORER_STANDALONE=true npm run build
+test -f dist/standalone/server.js
+```
+
+Copy the **contents** of `dist/standalone/` into a new, immutable release
+directory below `/opt/wcashexplorer-web/releases/`; the resulting layout must
+place the entry point at `<release>/server.js` and its bundled files at
+`<release>/dist/` and `<release>/node_modules/`. Do not nest another
+`standalone/` directory. Do not copy a developer environment, source
+`node_modules`, `.env` files, SSH material, or RPC credentials. Verify
+`<release>/server.js`, then point `/opt/wcashexplorer-web/current` at that exact
+release with one atomic symlink replacement.
+
+Install an official Node.js 22 runtime under `/opt/wcashexplorer-web/node`, create
+the locked `wcashexplorer-web` service account, and install
+`deploy/systemd/wcashexplorer-web.service`. The web process listens only on
+`127.0.0.1:3001` and has no access to node RPC credentials or PostgreSQL.
+
+Install `deploy/nginx/wcashexplorer.conf` as
+`/etc/nginx/sites-available/wcashexplorer.conf`, then symlink that complete file
+from `/etc/nginx/sites-enabled/`. It must be included from Nginx's `http`
+context, never from inside another `server` block, because it defines shared
+request zones and upstreams. The ingress keeps the browser and read-only API on
+one origin, applies separate request limits, and exposes neither the node RPC
+ports nor PostgreSQL. Validate before reload:
+
+```sh
+systemd-analyze verify /etc/systemd/system/wcashexplorer-web.service
+nginx -t
+systemctl daemon-reload
+systemctl enable --now wcashexplorer-web.service
+systemctl reload nginx
+curl --fail --header 'Host: wcashexplorer.com' http://127.0.0.1/healthz
+curl --fail --header 'Host: wcashexplorer.com' http://127.0.0.1/api/v1/status
+```
+
+Keep DNS away from the origin until those checks, the live API gate, and browser
+QA all pass. Before public DNS cutover, terminate TLS at the edge and use an
+authenticated TLS connection from the edge to the origin. Add HSTS only after
+HTTPS is verified end to end; never announce the plain-HTTP origin as the public
+explorer URL.
