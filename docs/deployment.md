@@ -31,7 +31,7 @@ sources are independent.
 
 - a synchronized Wcash Testnet node with authenticated RPC;
 - two synchronized Zcash Testnet nodes with authenticated RPC;
-- PostgreSQL 17 with durable storage and backups;
+- PostgreSQL 14 or newer with durable storage and backups;
 - a host or container runtime for the Rust service;
 - Node.js 22.13 or newer to build the web interface; and
 - a TLS reverse proxy or ingress with request and connection limits.
@@ -90,6 +90,10 @@ The checked-in testnet defaults encode eight decimals, 75-second target spacing,
 a 6.25 tWEC initial subsidy, first halving at height 1,680,001, and a 21 million
 maximum issuance schedule. They are validated at startup. Do not copy these
 values into a mainnet deployment without a separate release and review.
+
+The concrete single-host Testnet procedure and hardened systemd unit are in
+[`live-testnet-runbook.md`](live-testnet-runbook.md). The public production
+topology above remains the target for the domain deployment.
 
 ### RPC authentication
 

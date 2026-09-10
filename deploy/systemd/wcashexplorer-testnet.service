@@ -1,0 +1,47 @@
+[Unit]
+Description=Wcash Testnet explorer indexer and API
+Documentation=https://github.com/w-cash/wcashexplorer
+Wants=network-online.target
+Requires=postgresql.service wcash-testnet-node.service zcash-template-testnet.service zcash-validator-testnet.service
+After=network-online.target postgresql.service wcash-testnet-node.service zcash-template-testnet.service zcash-validator-testnet.service
+PartOf=wcash-testnet-node.service zcash-template-testnet.service zcash-validator-testnet.service
+
+[Service]
+Type=simple
+User=wcashexplorer
+Group=wcashexplorer
+EnvironmentFile=/etc/wcashexplorer/testnet.env
+LoadCredential=wcash_rpc:/run/wcash-node-rpc/.cookie
+LoadCredential=zcash_template_rpc:/run/zcash-template-rpc/.cookie
+LoadCredential=zcash_validator_rpc:/run/zcash-validator-rpc/.cookie
+ExecStart=/opt/wcashexplorer/libexec/wcashexplorer-start
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
