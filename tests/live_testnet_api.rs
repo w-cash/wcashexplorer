@@ -78,6 +78,12 @@ async fn run_live_api_test() -> Result<()> {
     let address = get_json(&client, base_url, &address_path).await?;
     ensure!(address["data"]["address"] == PAYOUT_ADDRESS);
     ensure!(address["data"]["addressType"] == "transparent");
+    ensure!(address["data"]["totalReceived"]["decimal"] == "300.00000000");
+    ensure!(address["data"]["totalSent"]["decimal"] == "0.00000000");
+    ensure!(address["data"]["unspent"]["decimal"] == "300.00000000");
+    ensure!(address["data"]["utxoCount"] == 48);
+    ensure!(address["data"]["transactionCount"] == 48);
+    ensure!(address["data"]["canonicalDoubleSpendAnomalies"] == 0);
     ensure!(address["data"]["activity"].as_array().is_some_and(|rows| {
         rows.iter().any(|row| {
             row["txid"] == BLOCK_ONE_TXID
@@ -88,6 +94,55 @@ async fn run_live_api_test() -> Result<()> {
         })
     }));
 
+    let network_history = get_json(&client, base_url, "/api/v1/network/history?limit=2048").await?;
+    ensure!(network_history["data"]["asOfHeight"] == 48);
+    ensure!(
+        network_history["data"]["points"]
+            .as_array()
+            .is_some_and(|points| points.len() == 49)
+    );
+
+    let pools = get_json(&client, base_url, "/api/v1/value-pools/history?limit=2048").await?;
+    ensure!(pools["data"]["unexpectedPoolSamples"] == 0);
+    let latest_pools = pools["data"]["points"]
+        .as_array()
+        .and_then(|points| points.last())
+        .context("value-pool history is empty")?;
+    ensure!(latest_pools["transparent"]["chainValue"]["decimal"] == "300.00000000");
+    ensure!(latest_pools["transparent"]["monitored"] == true);
+    ensure!(latest_pools["ironwood"]["monitored"] == false);
+
+    let merged = get_json(&client, base_url, "/api/v1/merge-mining/stats").await?;
+    for field in [
+        "eligibleChildBlocks",
+        "auxpowBlocks",
+        "locallyVerifiedBlocks",
+        "parentTargetVerifiedBlocks",
+        "canonicalParentBlocks",
+        "parentQuorumAgreementBlocks",
+        "bestChainWitnessBlocks",
+        "fullyVerifiedBlocks",
+    ] {
+        ensure!(merged["data"][field] == 48, "unexpected {field}");
+    }
+    ensure!(merged["data"]["anomalyBlocks"] == 0);
+    ensure!(
+        merged["data"]["observationSourceCount"]
+            .as_i64()
+            .is_some_and(|count| count >= 2)
+    );
+
+    let rich_list = get_json(&client, base_url, "/api/v1/addresses/rich-list").await?;
+    ensure!(rich_list["data"]["fundedAddressCount"] == 1);
+    ensure!(rich_list["data"]["addressedBalance"]["decimal"] == "300.00000000");
+    ensure!(rich_list["data"]["addresses"][0]["address"] == PAYOUT_ADDRESS);
+    ensure!(rich_list["data"]["addresses"][0]["transparentPoolSharePercent"] == "100.00000000");
+
+    let address_stats = get_json(&client, base_url, "/api/v1/addresses/stats?limit=2048").await?;
+    ensure!(address_stats["data"]["fundedAddressCount"] == 1);
+    ensure!(address_stats["data"]["seenAddressCount"] == 1);
+    ensure!(address_stats["data"]["addressedBalance"]["decimal"] == "300.00000000");
+
     let search = get_json(&client, base_url, "/api/v1/search?q=1").await?;
     ensure!(search["data"]["kind"] == "block");
     ensure!(search["data"]["route"] == "/block/1");
@@ -97,7 +152,7 @@ async fn run_live_api_test() -> Result<()> {
     ensure!(
         openapi["paths"]
             .as_object()
-            .is_some_and(|paths| paths.len() == 14)
+            .is_some_and(|paths| paths.len() == 19)
     );
     Ok(())
 }
