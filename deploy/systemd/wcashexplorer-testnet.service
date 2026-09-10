@@ -14,10 +14,7 @@ EnvironmentFile=/etc/wcashexplorer/testnet.env
 LoadCredential=wcash_rpc:/run/wcash-node-rpc/.cookie
 LoadCredential=zcash_template_rpc:/run/zcash-template-rpc/.cookie
 LoadCredential=zcash_validator_rpc:/run/zcash-validator-rpc/.cookie
-Environment=WCASH_RPC_COOKIE_FILE=%d/wcash_rpc
-Environment=ZCASH_RPC_COOKIE_FILE=%d/zcash_template_rpc
-Environment=ZCASH_RPC_SECONDARY_COOKIE_FILE=%d/zcash_validator_rpc
-ExecStart=/opt/wcashexplorer/bin/wcashexplorer
+ExecStart=/opt/wcashexplorer/libexec/wcashexplorer-start
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=60s

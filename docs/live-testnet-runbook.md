@@ -40,7 +40,9 @@ uncommitted working tree.
 
 Copy `deploy/testnet.env.example` to `/etc/wcashexplorer/testnet.env`, owned by
 `root:wcashexplorer` with mode `0640`. Copy the systemd unit to
-`/etc/systemd/system/wcashexplorer-testnet.service`.
+`/etc/systemd/system/wcashexplorer-testnet.service`, and install
+`deploy/systemd/wcashexplorer-start` at
+`/opt/wcashexplorer/libexec/wcashexplorer-start` with mode `0755`.
 
 The unit waits for PostgreSQL and all three node processes. systemd reads the
 owner-only node cookies and exposes private copies in the explorer's per-service

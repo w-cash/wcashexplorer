@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+credentials_dir=${CREDENTIALS_DIRECTORY:?systemd credential directory is unavailable}
+for credential in wcash_rpc zcash_template_rpc zcash_validator_rpc; do
+    if [ ! -r "${credentials_dir}/${credential}" ]; then
+        echo "required RPC credential is unavailable: ${credential}" >&2
+        exit 1
+    fi
+done
+
+export WCASH_RPC_COOKIE_FILE="${credentials_dir}/wcash_rpc"
+export ZCASH_RPC_COOKIE_FILE="${credentials_dir}/zcash_template_rpc"
+export ZCASH_RPC_SECONDARY_COOKIE_FILE="${credentials_dir}/zcash_validator_rpc"
+
+exec /opt/wcashexplorer/bin/wcashexplorer
