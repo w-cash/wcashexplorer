@@ -1,76 +1,69 @@
 'use client';
 
-import { ArrowRight, Search } from 'lucide-react';
-import { type SyntheticEvent, useState } from 'react';
+import { Search } from 'lucide-react';
+import { useState } from 'react';
+import type { SyntheticEvent } from 'react';
 import { ExplorerApiError, resolveSearch } from '@/lib/explorer-data';
 
 export function SearchBox() {
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  async function submit(event: SyntheticEvent<HTMLFormElement>) {
+  async function handleSubmit(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
-    const value = query.trim();
-    if (!value) return;
-    setBusy(true);
+    const normalized = query.trim();
+    if (!normalized || loading) return;
+
     setError('');
+    setLoading(true);
     try {
-      const route = await resolveSearch(value);
-      window.location.assign(route);
-    } catch (caught) {
+      window.location.assign(await resolveSearch(normalized));
+    } catch (failure) {
       setError(
-        caught instanceof ExplorerApiError && caught.status === 404
-          ? 'No exact block, transaction, or transparent address match was found.'
-          : 'Search is unavailable because the explorer API could not be reached.',
+        failure instanceof ExplorerApiError && failure.status === 404
+          ? 'No matching block, transaction, or transparent address.'
+          : 'Search is temporarily unavailable.',
       );
-      setBusy(false);
+      setLoading(false);
     }
   }
 
   return (
     <div id="search">
       <search>
-        <form
-          onSubmit={submit}
-          className="panel flex min-h-[64px] items-center gap-3 p-2 pl-4 focus-within:border-[var(--brand)]"
-        >
+        <form className="search-form" onSubmit={handleSubmit}>
           <Search
-            size={21}
-            className="shrink-0 text-[var(--brand)]"
+            size={16}
+            className="shrink-0 text-[var(--faint)]"
             aria-hidden="true"
           />
-          <label htmlFor="chain-search" className="sr-only">
-            Search by block height, block hash, transaction ID, or transparent
-            address
+          <label className="sr-only" htmlFor="chain-search">
+            Search blocks, transactions, and transparent addresses
           </label>
           <input
             id="chain-search"
+            className="mono min-w-0 flex-1 border-0 bg-transparent text-sm text-[var(--text)] outline-none placeholder:font-sans placeholder:text-[var(--faint)]"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Block height, hash, transaction ID, or Wcash transparent address"
+            placeholder="Block, transaction, or transparent address"
             autoComplete="off"
             spellCheck={false}
-            className="mono min-w-0 flex-1 bg-transparent py-3 text-sm text-[var(--text)] outline-none placeholder:font-sans placeholder:text-[var(--faint)]"
           />
           <button
+            className="search-submit"
             type="submit"
-            disabled={busy || !query.trim()}
-            className="flex min-h-11 items-center gap-2 rounded-[10px] bg-[var(--brand)] px-4 text-sm font-extrabold text-[var(--brand-ink)] disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={!query.trim() || loading}
           >
-            <span className="hidden sm:inline">
-              {busy ? 'Checking' : 'Explore'}
-            </span>
-            <ArrowRight size={17} aria-hidden="true" />
+            {loading ? 'Searching…' : 'Search'}
           </button>
         </form>
       </search>
-      <p
-        aria-live="polite"
-        className="mt-2 min-h-5 px-1 text-sm text-[var(--danger)]"
-      >
-        {error}
-      </p>
+      {error ? (
+        <p className="mt-2 text-xs text-[var(--danger)]" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

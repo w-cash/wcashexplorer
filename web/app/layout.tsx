@@ -8,13 +8,13 @@ export const metadata: Metadata = {
     template: '%s · WcashExplorer',
   },
   description:
-    'Independent Wcash Testnet block explorer with exact AuxPoW verification and Zcash parent-chain evidence.',
+    'Browse Wcash Testnet blocks, transactions, transparent addresses, network status, and AuxPoW data.',
   applicationName: 'WcashExplorer',
   icons: { icon: '/wcash-mark.svg' },
   openGraph: {
     title: 'WcashExplorer',
     description:
-      'Verify Wcash blocks, transactions, supply, and Zcash merge-mining evidence.',
+      'Browse Wcash Testnet blocks, transactions, transparent addresses, network status, and AuxPoW data.',
     type: 'website',
     url: 'https://wcashexplorer.com',
     siteName: 'WcashExplorer',
@@ -23,14 +23,14 @@ export const metadata: Metadata = {
         url: '/og.png',
         width: 1200,
         height: 630,
-        alt: 'WcashExplorer — verify the work',
+        alt: 'WcashExplorer Wcash Testnet block explorer',
       },
     ],
   },
   twitter: {
     card: 'summary_large_image',
     title: 'WcashExplorer',
-    description: 'Verify Wcash blocks and Zcash merge-mining evidence.',
+    description: 'Wcash Testnet blocks and Zcash AuxPoW evidence.',
     images: ['/og.png'],
   },
 };
@@ -38,8 +38,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   colorScheme: 'dark light',
   themeColor: [
-    { media: '(prefers-color-scheme: dark)', color: '#070b08' },
-    { media: '(prefers-color-scheme: light)', color: '#f4f8f3' },
+    { media: '(prefers-color-scheme: dark)', color: '#0b0e0c' },
+    { media: '(prefers-color-scheme: light)', color: '#f4f6f3' },
   ],
 };
 

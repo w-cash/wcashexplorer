@@ -1,20 +1,6 @@
 'use client';
 
 import Link from 'next/link';
-import {
-  ArrowUpRight,
-  Boxes,
-  Check,
-  CircleDollarSign,
-  Clock3,
-  DatabaseZap,
-  GitCommitHorizontal,
-  GitMerge,
-  LockKeyhole,
-  Pickaxe,
-  RefreshCw,
-  ShieldCheck,
-} from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import {
   type BlockSummary,
@@ -64,204 +50,160 @@ export function Dashboard() {
       dashboard.blocks.data[0],
     [dashboard.blocks.data, dashboard.proofBlock],
   );
+  const isReady = status.status === 'ready';
+  const statusFailed = isFailureState(status.status);
+  const isPreview = dashboard.source === 'preview';
 
   return (
-    <div className="space-y-8">
-      <section className="grid items-end gap-8 lg:grid-cols-[minmax(0,1fr)_420px]">
+    <div className="space-y-6">
+      <section className="page-intro">
         <div>
-          <div className="eyebrow flex items-center gap-2">
-            <ShieldCheck size={15} aria-hidden="true" /> Independent chain
-            evidence
-          </div>
-          <h1 className="mt-4 max-w-4xl text-[clamp(2.35rem,6vw,5.6rem)] font-extrabold leading-[0.93] tracking-[-0.065em]">
-            See the block.
-            <br />
-            <span className="text-[var(--brand)]">Verify the work.</span>
-          </h1>
-          <p className="mt-6 max-w-2xl text-base leading-7 text-[var(--muted)] sm:text-lg">
-            WcashExplorer indexes Wcash separately from Zcash and shows exactly
-            what the merge-mining proof establishes—without guessing at private
-            activity.
+          <div className="eyebrow">Wcash Testnet</div>
+          <h1 className="page-title">Block explorer</h1>
+          <p className="page-description">
+            Search blocks, transactions, and transparent addresses.
           </p>
         </div>
-        <div className="panel p-5">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <div className="eyebrow">Chain health</div>
-              <div className="mt-2 text-lg font-bold">
-                Indexer is {status.status}
-              </div>
-            </div>
-            <span
-              className={`pill ${status.status === 'ready' ? 'pill-success' : status.status === 'preview' ? 'pill-warning' : 'pill-danger'}`}
-            >
-              <span className="status-dot" aria-hidden="true" />{' '}
-              {status.lagBlocks ?? '—'} block lag
-            </span>
-          </div>
-          <div className="mt-5 grid grid-cols-2 gap-3 border-t border-[var(--border)] pt-5 text-sm">
-            <div>
-              <div className="text-[var(--faint)]">Indexed tip</div>
-              <div className="mono mt-1 font-bold">
-                #{status.indexedHeight ?? '—'}
-              </div>
-            </div>
-            <div>
-              <div className="text-[var(--faint)]">Data mode</div>
-              <div className="mt-1 flex items-center gap-2 font-bold">
-                <DatabaseZap
-                  size={15}
-                  className="text-[var(--mint)]"
-                  aria-hidden="true"
-                />
-                {dashboard.source === 'live'
-                  ? 'Live API'
-                  : dashboard.source === 'preview'
-                    ? 'Labeled preview'
-                    : 'API unavailable'}
-              </div>
-            </div>
-          </div>
+        <div
+          className={`chain-state ${
+            isReady
+              ? 'status-label-success'
+              : statusFailed
+                ? 'status-label-danger'
+                : isPreview
+                  ? 'status-label-warning'
+                  : 'status-label-info'
+          }`}
+        >
+          <span className="status-dot" aria-hidden="true" />
+          <strong>
+            {isReady
+              ? 'Synchronized'
+              : isPreview
+                ? 'Preview data'
+                : humanize(status.status)}
+          </strong>
+          {status.indexedHeight === null ? null : (
+            <>
+              <span>·</span>
+              <span className="mono">#{status.indexedHeight}</span>
+            </>
+          )}
+          {dashboard.status.meta.freshnessSeconds === null &&
+          !isPreview ? null : (
+            <>
+              <span>·</span>
+              <span>
+                {isPreview
+                  ? 'fixed snapshot'
+                  : `${dashboard.status.meta.freshnessSeconds}s old`}
+              </span>
+            </>
+          )}
         </div>
       </section>
 
       <SearchBox />
 
-      <section aria-label="Network summary" className="metric-grid">
+      <section aria-label="Network summary" className="stats-strip">
         <Metric
-          icon={<Boxes size={17} />}
-          label="Canonical tip"
+          label="Latest block"
           value={`#${status.indexedHeight ?? '—'}`}
-          foot={`${dashboard.status.meta.freshnessSeconds ?? '—'}s data age`}
+          foot={
+            status.lagBlocks === null
+              ? 'Node comparison unavailable'
+              : status.lagBlocks === 0
+                ? 'Synced with node'
+                : `${status.lagBlocks} ${status.lagBlocks === 1 ? 'block' : 'blocks'} behind`
+          }
         />
         <Metric
-          icon={<Pickaxe size={17} />}
           label="Difficulty"
           value={status.difficulty ?? '—'}
-          foot={`${status.targetSpacingSeconds}s target block time`}
+          foot={`${status.targetSpacingSeconds}s target`}
         />
         <Metric
-          icon={<Clock3 size={17} />}
-          label="Observed spacing"
+          label="Avg. block time"
           value={
             status.observedSpacingSeconds
               ? `${Math.round(status.observedSpacingSeconds)}s`
               : '—'
           }
-          foot="Rolling canonical sample"
+          foot="Recent canonical blocks"
         />
         <Metric
-          icon={<CircleDollarSign size={17} />}
-          label="Total issued"
+          label="Issued"
           value={
             dashboard.source === 'unavailable'
               ? '—'
               : `${trimAmount(status.totalIssued.decimal)} ${status.symbol}`
           }
-          foot={`Hard cap ${Number(status.maxSupply.decimal).toLocaleString()} ${status.maxSupply.symbol}`}
+          foot={`Cap ${Number(status.maxSupply.decimal).toLocaleString()} ${status.maxSupply.symbol}`}
         />
       </section>
 
-      <section className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1.7fr)_minmax(340px,0.8fr)]">
-        <div className="min-w-0">
-          <SectionHeading
-            eyebrow="Canonical chain"
-            title="Latest Wcash blocks"
-            href="/blocks"
-            action="All blocks"
-          />
-          <BlockTable
-            blocks={dashboard.blocks.data.slice(0, 8)}
-            loading={loading}
-          />
-        </div>
-        <div className="min-w-0">
-          <SectionHeading
-            eyebrow="Dual-chain evidence"
-            title="Latest parent match"
-          />
-          {latestProof ? (
-            <ProofCard block={latestProof} />
-          ) : (
-            <div className="panel p-6 text-sm leading-6 text-[var(--muted)]">
-              No verified merge-mining record is available while the index is
-              offline.
-            </div>
-          )}
-        </div>
+      <section className="min-w-0">
+        <SectionHeading
+          title="Latest blocks"
+          href="/blocks"
+          action="View all"
+        />
+        <BlockTable
+          blocks={dashboard.blocks.data.slice(0, 10)}
+          loading={loading}
+        />
       </section>
 
-      <section className="panel grid gap-7 p-6 md:grid-cols-[1fr_1.1fr] md:p-8">
-        <div>
-          <div className="eyebrow flex items-center gap-2">
-            <LockKeyhole size={15} aria-hidden="true" /> Privacy-honest by
-            design
+      <section className="min-w-0">
+        <SectionHeading title="Latest AuxPoW check" />
+        {latestProof ? (
+          <ProofRecord block={latestProof} />
+        ) : (
+          <div className="panel p-5 text-sm text-[var(--muted)]">
+            Merge-mining data is unavailable.
           </div>
-          <h2 className="mt-3 text-2xl font-extrabold tracking-[-0.04em] sm:text-3xl">
-            Hidden means hidden—not zero.
-          </h2>
-        </div>
-        <p className="text-sm leading-7 text-[var(--muted)] sm:text-base">
-          The explorer shows public transparent inputs and outputs, aggregate
-          value-pool movement, nullifiers, commitments, and Ironwood action
-          counts. It never invents shielded senders, recipients, note amounts,
-          balances, or memos that the protocol keeps private.
-        </p>
+        )}
       </section>
     </div>
   );
 }
 
 function Metric({
-  icon,
   label,
   value,
   foot,
 }: {
-  icon: React.ReactNode;
   label: string;
   value: string;
   foot: string;
 }) {
   return (
-    <article className="metric panel">
-      <div className="metric-label">
-        <span>{label}</span>
-        <span className="text-[var(--brand)]" aria-hidden="true">
-          {icon}
-        </span>
-      </div>
-      <div className="metric-value">{value}</div>
-      <div className="metric-foot">{foot}</div>
+    <article className="stat-cell">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value">{value}</div>
+      <div className="stat-foot">{foot}</div>
     </article>
   );
 }
 
 function SectionHeading({
-  eyebrow,
   title,
   href,
   action,
 }: {
-  eyebrow: string;
   title: string;
   href?: string;
   action?: string;
 }) {
   return (
-    <div className="mb-4 flex min-h-12 items-end justify-between gap-4">
-      <div>
-        <div className="eyebrow">{eyebrow}</div>
-        <h2 className="mt-1 text-xl font-extrabold tracking-[-0.035em]">
-          {title}
-        </h2>
-      </div>
+    <div className="section-heading">
+      <h2>{title}</h2>
       {href && action ? (
         <Link
           href={href}
-          className="flex min-h-11 items-center gap-1 text-sm font-bold text-[var(--brand)]"
+          className="text-xs font-semibold text-[var(--muted)] hover:text-[var(--text)]"
         >
-          {action} <ArrowUpRight size={15} aria-hidden="true" />
+          {action}
         </Link>
       ) : null}
     </div>
@@ -278,13 +220,14 @@ export function BlockTable({
   if (loading && blocks.length === 0) {
     return (
       <output
-        className="skeleton block h-96"
+        className="skeleton block h-80"
         aria-label="Loading latest blocks"
       >
         <span className="sr-only">Loading latest blocks</span>
       </output>
     );
   }
+
   return (
     <div className="table-shell">
       <table className="data-table">
@@ -293,147 +236,156 @@ export function BlockTable({
           <tr>
             <th>Height</th>
             <th>Block hash</th>
-            <th>Transactions</th>
+            <th>Txs</th>
             <th>Reward</th>
-            <th>Merge evidence</th>
+            <th>AuxPoW</th>
             <th>Time (UTC)</th>
           </tr>
         </thead>
         <tbody>
-          {blocks.map((block) => (
-            <tr key={`${block.hash}:${block.witnessHash}`}>
-              <td data-label="Height">
-                <Link
-                  href={`/block/${block.height}`}
-                  className="mono font-bold text-[var(--brand)]"
+          {blocks.map((block) => {
+            const proofState = block.mergeMining.localValidationState;
+            const localValid = proofState === 'auxpow_verified';
+            const localFailed = isFailureState(proofState);
+            const parentState = block.mergeMining.parentLookupState;
+            const parentObserved = parentState === 'canonical';
+            const parentDisagrees = parentState === 'disagreement';
+            return (
+              <tr key={`${block.hash}:${block.witnessHash}`}>
+                <td data-label="Height">
+                  <Link
+                    href={`/block/${block.height}`}
+                    className="mono font-semibold text-[var(--brand)]"
+                  >
+                    #{block.height.toLocaleString()}
+                  </Link>
+                </td>
+                <td data-label="Block hash" data-wide="true">
+                  <Link
+                    href={`/block/${block.hash}`}
+                    className="hash block max-w-[300px]"
+                    title={block.hash}
+                  >
+                    {middleEllipsis(block.hash, 26)}
+                  </Link>
+                </td>
+                <td data-label="Txs" className="mono">
+                  {block.transactionCount}
+                </td>
+                <td data-label="Reward" className="mono whitespace-nowrap">
+                  {trimAmount(block.reward.decimal)} {block.reward.symbol}
+                </td>
+                <td data-label="AuxPoW">
+                  <span
+                    className={`status-label ${
+                      localFailed
+                        ? 'status-label-danger'
+                        : parentDisagrees
+                          ? 'status-label-warning'
+                          : parentObserved && localValid
+                            ? 'status-label-success'
+                            : 'status-label-info'
+                    }`}
+                  >
+                    <span className="status-dot" aria-hidden="true" />
+                    {localValid
+                      ? parentObserved
+                        ? 'Valid · parent observed'
+                        : parentDisagrees
+                          ? 'Valid · sources disagree'
+                          : parentState === 'not_found'
+                            ? 'Valid · parent not observed'
+                            : `Valid · ${parentState.replaceAll('_', ' ')}`
+                      : humanize(proofState)}
+                  </span>
+                </td>
+                <td
+                  data-label="Time (UTC)"
+                  className="whitespace-nowrap text-[var(--muted)]"
                 >
-                  #{block.height.toLocaleString()}
-                </Link>
-              </td>
-              <td data-label="Block hash" data-wide="true">
-                <Link
-                  href={`/block/${block.hash}`}
-                  className="hash block max-w-[240px]"
-                  title={block.hash}
-                >
-                  {middleEllipsis(block.hash, 20)}
-                </Link>
-              </td>
-              <td data-label="Transactions" className="mono">
-                {block.transactionCount}
-              </td>
-              <td data-label="Reward" className="mono whitespace-nowrap">
-                {trimAmount(block.reward.decimal)} {block.reward.symbol}
-              </td>
-              <td data-label="Merge evidence">
-                {block.mergeMining.localValidationState !==
-                'auxpow_verified' ? (
-                  <span className="pill pill-danger">
-                    <RefreshCw size={13} aria-hidden="true" /> Unverified
-                  </span>
-                ) : block.mergeMining.parentLookupState === 'canonical' &&
-                  block.mergeMining.parentSourcesAgree ? (
-                  <span className="pill pill-success">
-                    <Check size={13} aria-hidden="true" /> Parent observed
-                    canonical
-                  </span>
-                ) : (
-                  <span className="pill pill-info">
-                    <GitCommitHorizontal size={13} aria-hidden="true" /> AuxPoW
-                    verified
-                  </span>
-                )}
-              </td>
-              <td
-                data-label="Time (UTC)"
-                className="whitespace-nowrap text-[var(--muted)]"
-              >
-                <time dateTime={block.time}>{relativeTime(block.time)}</time>
-              </td>
-            </tr>
-          ))}
+                  <time dateTime={block.time}>{relativeTime(block.time)}</time>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
-function ProofCard({ block }: { block: BlockSummary }) {
-  const locallyValid =
-    block.mergeMining.localValidationState === 'auxpow_verified';
+function ProofRecord({ block }: { block: BlockSummary }) {
+  const proofState = block.mergeMining.localValidationState;
+  const locallyValid = proofState === 'auxpow_verified';
+  const localFailed = isFailureState(proofState);
   const exactWitness = block.mergeMining.exactWitnessState === 'best_chain';
-  const parentCanonical =
-    block.mergeMining.parentLookupState === 'canonical' &&
-    block.mergeMining.parentSourcesAgree;
+  const parentObserved = block.mergeMining.parentLookupState === 'canonical';
+
   return (
     <article className="panel overflow-hidden">
-      <div className="border-b border-[var(--border)] bg-[var(--raised)] p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <span
-            className={`pill ${locallyValid ? 'pill-success' : 'pill-danger'}`}
-          >
-            {locallyValid ? (
-              <Check size={13} aria-hidden="true" />
-            ) : (
-              <RefreshCw size={13} aria-hidden="true" />
-            )}
-            {locallyValid ? 'AuxPoW verified' : 'Proof not verified'}
-          </span>
-          <span className="mono text-xs text-[var(--faint)]">
-            Exact indexed witness
-          </span>
-        </div>
-        <div className="mt-5 flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--brand)] text-[var(--brand-ink)]">
-            <GitMerge size={22} aria-hidden="true" />
-          </div>
-          <div>
-            <div className="text-sm text-[var(--muted)]">Wcash block</div>
-            <Link
-              href={`/block/${block.height}`}
-              className="mono text-lg font-bold"
-            >
-              #{block.height.toLocaleString()}
-            </Link>
-          </div>
-        </div>
-      </div>
-      <div className="space-y-5 p-5">
-        <EvidenceRow
-          label="Exact Wcash witness"
-          value={humanize(block.mergeMining.exactWitnessState)}
-          state={exactWitness ? 'success' : 'info'}
-        />
-        <EvidenceRow
-          label="Local consensus checks"
-          value={locallyValid ? 'Passed' : 'Not verified'}
-          state={locallyValid ? 'success' : 'info'}
-        />
-        <EvidenceRow
-          label="Zcash Testnet parent"
-          value={
-            parentCanonical
-              ? `Canonical #${block.mergeMining.parentHeight?.toLocaleString()}`
-              : 'Not observed as a block'
-          }
-          state={parentCanonical ? 'success' : 'info'}
-        />
-        <div className="border-t border-[var(--border)] pt-4">
-          <div className="mb-2 text-xs font-bold uppercase tracking-[0.08em] text-[var(--faint)]">
-            Parent header hash
-          </div>
-          <div
-            className="hash text-xs"
-            title={block.mergeMining.parentBlockHash ?? undefined}
-          >
-            {block.mergeMining.parentBlockHash ?? 'No parent hash available'}
-          </div>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3">
         <Link
           href={`/block/${block.height}#auxpow`}
-          className="flex min-h-11 w-full items-center justify-center gap-2 rounded-[10px] border border-[var(--border-strong)] text-sm font-bold hover:bg-[var(--raised)]"
+          className="mono font-semibold text-[var(--brand)]"
         >
-          Inspect proof ladder <ArrowUpRight size={15} aria-hidden="true" />
+          Block #{block.height.toLocaleString()}
+        </Link>
+        <span
+          className={`status-label ${
+            locallyValid
+              ? 'status-label-success'
+              : localFailed
+                ? 'status-label-danger'
+                : 'status-label-info'
+          }`}
+        >
+          <span className="status-dot" aria-hidden="true" />
+          {locallyValid ? 'AuxPoW valid' : humanize(proofState)}
+        </span>
+      </div>
+      <dl className="divide-y divide-[var(--border)] px-4 text-sm">
+        <EvidenceRow
+          label="Wcash witness"
+          value={
+            exactWitness
+              ? 'Best chain'
+              : humanize(block.mergeMining.exactWitnessState)
+          }
+        />
+        <EvidenceRow
+          label="Zcash observation"
+          value={
+            parentObserved
+              ? `Parent #${block.mergeMining.parentHeight?.toLocaleString()}`
+              : humanize(block.mergeMining.parentLookupState)
+          }
+        />
+        <EvidenceRow
+          label="Source agreement"
+          value={
+            block.mergeMining.parentSourcesAgree
+              ? 'Established'
+              : block.mergeMining.parentLookupState === 'disagreement'
+                ? 'Disagreement'
+                : 'Not established'
+          }
+        />
+        <EvidenceRow
+          label="Parent block"
+          value={
+            block.mergeMining.parentBlockHash
+              ? middleEllipsis(block.mergeMining.parentBlockHash, 30)
+              : 'Unavailable'
+          }
+          mono
+        />
+      </dl>
+      <div className="border-t border-[var(--border)] px-4 py-3 text-right">
+        <Link
+          href={`/block/${block.height}#auxpow`}
+          className="text-xs font-semibold text-[var(--muted)] hover:text-[var(--text)]"
+        >
+          View proof details
         </Link>
       </div>
     </article>
@@ -443,25 +395,18 @@ function ProofCard({ block }: { block: BlockSummary }) {
 function EvidenceRow({
   label,
   value,
-  state,
+  mono = false,
 }: {
   label: string;
   value: string;
-  state: 'success' | 'info';
+  mono?: boolean;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 text-sm">
-      <span className="text-[var(--muted)]">{label}</span>
-      <span
-        className={`flex items-center gap-2 text-right font-bold ${state === 'success' ? 'text-[var(--mint)]' : 'text-[var(--info)]'}`}
-      >
-        {state === 'success' ? (
-          <Check size={15} aria-hidden="true" />
-        ) : (
-          <RefreshCw size={14} aria-hidden="true" />
-        )}
+    <div className="flex items-center justify-between gap-5 py-3">
+      <dt className="text-[var(--muted)]">{label}</dt>
+      <dd className={`${mono ? 'mono' : ''} text-right font-medium`}>
         {value}
-      </span>
+      </dd>
     </div>
   );
 }
@@ -487,4 +432,11 @@ export function relativeTime(value: string) {
     .toISOString()
     .replace('T', ' ')
     .replace('.000Z', ' UTC');
+}
+
+function isFailureState(value: string) {
+  const normalized = value.toLowerCase();
+  return ['error', 'failed', 'invalid', 'rejected', 'unavailable'].some(
+    (state) => normalized.includes(state),
+  );
 }

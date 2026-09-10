@@ -427,7 +427,9 @@ async fn transaction(
         inputs,
         outputs,
         raw_rpc,
-        privacy_notice: "Hidden shielded senders, recipients, per-note amounts, and memos cannot be recovered by this explorer.".to_owned(),
+        privacy_notice:
+            "Shielded senders, recipients, note amounts, and memos are not visible on-chain."
+                .to_owned(),
     };
     Ok(Json(envelope(&state, data, None, &chain)))
 }
@@ -495,7 +497,9 @@ async fn address(
         mined_output_count: balances.mined_output_count,
         coinbase_maturity: state.network.coinbase_maturity,
         activity,
-        scope_notice: "This page covers public transparent-chain activity only. Shielded holdings are intentionally undiscoverable.".to_owned(),
+        scope_notice:
+            "This page shows transparent activity only; shielded balances are not visible."
+                .to_owned(),
     };
     Ok(Json(envelope(&state, data, None, &chain)))
 }
@@ -719,7 +723,7 @@ fn openapi_document() -> Value {
                 "get": {
                     "tags": ["Addresses"],
                     "summary": "Get transparent-address activity",
-                    "description": "Covers public transparent outputs only. Shielded holdings and activity are intentionally undiscoverable.",
+                    "description": "Covers transparent outputs only. Shielded balances and activity are not visible.",
                     "operationId": "getTransparentAddress",
                     "parameters": [parameter_ref("Address")],
                     "responses": {
@@ -1341,7 +1345,7 @@ async fn load_auxpow(
         parent_block_url,
         parent_coinbase_tx_url,
         observations,
-        meaning: "Local AuxPoW consensus validity and Zcash parent-chain acceptance are independent facts.".to_owned(),
+        meaning: "AuxPoW validity is verified locally. Parent status is reported by configured Zcash nodes.".to_owned(),
     }))
 }
 

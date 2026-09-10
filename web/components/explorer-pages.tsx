@@ -5,25 +5,17 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  Check,
-  CircleGauge,
-  Coins,
   ExternalLink,
-  FileKey,
-  GitMerge,
-  Layers3,
-  LockKeyhole,
-  Network,
-  Pickaxe,
-  ShieldCheck,
-  WalletCards,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   type AddressDetail,
+  type AuxPowEvidence,
   type BlockDetail,
   type BlockSummary,
   type Envelope,
+  type ParentObservation,
   type Reorg,
   type Status,
   type TransactionDetail,
@@ -75,13 +67,13 @@ export function BlocksPage() {
             error: '',
             loading: false,
           });
-        } else {
-          setResource({
-            envelope: null,
-            error: 'The indexed block feed is unavailable.',
-            loading: false,
-          });
+          return;
         }
+        setResource({
+          envelope: null,
+          error: 'The indexed block feed is unavailable.',
+          loading: false,
+        });
       },
     );
     return () => controller.abort();
@@ -90,8 +82,8 @@ export function BlocksPage() {
   return (
     <PageFrame
       eyebrow="Canonical chain"
-      title="Wcash blocks"
-      description="Only blocks selected by the indexed Wcash canonical chain appear here."
+      title="Blocks"
+      description="Canonical Wcash blocks indexed from the node."
     >
       <SearchBox />
       {previewEnabled && resource.envelope === previewDashboard.blocks ? (
@@ -133,9 +125,9 @@ export function TransactionsPage() {
 
   return (
     <PageFrame
-      eyebrow="Canonical activity"
+      eyebrow="Canonical chain"
       title="Transactions"
-      description="Public transaction structure is shown exactly; shielded identities and note values remain private."
+      description="Public transaction structure from canonical Wcash blocks."
     >
       <SearchBox />
       <ResourceState loading={resource.loading} error={resource.error}>
@@ -174,9 +166,11 @@ export function BlockPage({ id }: { id: string }) {
   const block = resource.envelope?.data;
   return (
     <PageFrame
-      eyebrow="Block record"
-      title={block ? `Block #${block.height.toLocaleString()}` : 'Block'}
-      description="Wcash identity, canonical witness, transactions, and merge-mining evidence are kept separate."
+      eyebrow="Blocks"
+      title={block ? `#${block.height.toLocaleString()}` : 'Block'}
+      description={
+        block ? middleEllipsis(block.hash, 42) : 'Canonical block record'
+      }
     >
       <ResourceState loading={resource.loading} error={resource.error}>
         {block ? <BlockDetailView block={block} /> : null}
@@ -202,8 +196,7 @@ export function TransactionPage({
       () =>
         setResource({
           envelope: null,
-          error:
-            'That transaction was not found on the indexed canonical chain.',
+          error: 'That transaction was not found on the canonical chain.',
           loading: false,
         }),
     );
@@ -212,9 +205,9 @@ export function TransactionPage({
 
   return (
     <PageFrame
-      eyebrow="Transaction record"
+      eyebrow="Transactions"
       title="Transaction"
-      description={middleEllipsis(txid, 34)}
+      description={middleEllipsis(txid, 42)}
     >
       <ResourceState loading={resource.loading} error={resource.error}>
         {resource.envelope ? (
@@ -245,9 +238,9 @@ export function AddressPage({ address }: { address: string }) {
 
   return (
     <PageFrame
-      eyebrow="Transparent scope"
+      eyebrow="Transparent addresses"
       title="Address"
-      description={middleEllipsis(address, 38)}
+      description={middleEllipsis(address, 46)}
     >
       <ResourceState loading={resource.loading} error={resource.error}>
         {resource.envelope ? (
@@ -273,62 +266,60 @@ export function MergeMiningPage() {
             error: '',
             loading: false,
           });
-        } else {
-          setResource({
-            envelope: null,
-            error:
-              'Merge-mining evidence is unavailable while the indexer is offline.',
-            loading: false,
-          });
+          return;
         }
+        setResource({
+          envelope: null,
+          error: 'Merge-mining evidence is unavailable.',
+          loading: false,
+        });
       },
     );
     return () => controller.abort();
   }, []);
 
   const blocks = resource.envelope?.data ?? [];
+  const auxPowBlocks = blocks.filter(
+    (block) => block.mergeMining.localValidationState !== 'genesis',
+  );
+  const localProofs = blocks.filter(
+    (block) => block.mergeMining.localValidationState === 'auxpow_verified',
+  ).length;
   const canonicalParents = blocks.filter(
     (block) => block.mergeMining.parentLookupState === 'canonical',
   ).length;
+
   return (
     <PageFrame
-      eyebrow="Zcash parent evidence"
+      eyebrow="Auxiliary proof of work"
       title="Merge mining"
-      description="Every Wcash block proves its own AuxPoW validity. Parent-chain canonical acceptance is a separate, source-observed fact."
+      description="Wcash AuxPoW validation and observations from configured Zcash nodes."
     >
-      <div className="grid gap-4 md:grid-cols-3">
-        <FactCard
-          icon={<ShieldCheck />}
-          label="Local proof"
-          value="Full consensus validation"
+      <div className="stats-strip stats-strip-three">
+        <SummaryMetric label="Blocks shown" value={blocks.length.toString()} />
+        <SummaryMetric
+          label="Valid AuxPoW"
+          value={`${localProofs} of ${auxPowBlocks.length}`}
         />
-        <FactCard
-          icon={<GitMerge />}
-          label="Parent observations"
-          value="Up to two Zcash nodes"
-        />
-        <FactCard
-          icon={<Layers3 />}
-          label="Canonical matches in view"
-          value={`${canonicalParents} of ${blocks.length}`}
+        <SummaryMetric
+          label="Parent observed"
+          value={canonicalParents.toString()}
         />
       </div>
-      <section className="panel p-6 sm:p-8">
-        <h2 className="text-xl font-extrabold tracking-[-0.03em]">
-          What the labels mean
-        </h2>
-        <div className="mt-6 grid gap-5 md:grid-cols-3">
+      <section className="panel overflow-hidden">
+        <SectionHeader title="Verification states" />
+        <div className="definition-grid">
           <Definition
-            title="AuxPoW verified"
-            body="The embedded Equihash solution, child commitment, Merkle branches, indices, and Wcash target passed the pinned consensus verifier."
+            title="AuxPoW valid"
+            body="The Equihash solution, child commitment, Merkle paths, indices, and Wcash target pass the pinned verifier."
           />
           <Definition
-            title="Exact witness"
-            body="The Wcash node recognizes this precise serialized AuxPoW witness—not only the witness-independent block ID."
+            title="Witness on best chain"
+            body="The Wcash node recognizes this exact serialized proof witness on its canonical chain."
           />
           <Definition
-            title="Configured Zcash sources agree"
-            body="Configured Zcash Testnet validators returned the exact parent block and its raw header matched the header embedded in the proof."
+            title="Zcash parent observed"
+            body="Configured Zcash nodes return the parent block and its raw header matches the proof."
           />
         </div>
       </section>
@@ -368,58 +359,62 @@ export function NetworkPage() {
   const network = status.envelope?.data;
   return (
     <PageFrame
-      eyebrow="Indexer telemetry"
+      eyebrow="Chain state"
       title="Network"
-      description="Consensus constants, observed chain state, synchronization health, and reorganization history."
+      description="Indexer status, consensus parameters, supply, and reorganization history."
     >
       <ResourceState loading={status.loading} error={status.error}>
         {network ? (
           <>
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <FactCard
-                icon={<Network />}
-                label="Indexed / node tip"
+            <div className="stats-strip">
+              <SummaryMetric
+                label="Explorer height / node height"
                 value={`${network.indexedHeight ?? '—'} / ${network.nodeHeight ?? '—'}`}
               />
-              <FactCard
-                icon={<CircleGauge />}
-                label="Target spacing"
-                value={`${network.targetSpacingSeconds} seconds`}
+              <SummaryMetric
+                label="Target block time"
+                value={`${network.targetSpacingSeconds}s`}
               />
-              <FactCard
-                icon={<Coins />}
-                label="Initial subsidy"
+              <SummaryMetric
+                label="Initial reward"
                 value={`${trimAmount(network.initialSubsidy.decimal)} ${network.symbol}`}
               />
-              <FactCard
-                icon={<Pickaxe />}
+              <SummaryMetric
                 label="Next halving"
-                value={`Block ${network.nextHalvingHeight.toLocaleString()}`}
+                value={`#${network.nextHalvingHeight.toLocaleString()}`}
               />
             </div>
-            <section className="panel p-6 sm:p-8">
-              <h2 className="text-xl font-extrabold tracking-[-0.03em]">
-                Supply policy
-              </h2>
-              <dl className="record-grid mt-6">
+            <section className="panel overflow-hidden">
+              <SectionHeader title="Supply policy" />
+              <dl className="record-grid p-4 sm:p-5">
                 <Record
                   label="Maximum supply"
                   value={`${Number(network.maxSupply.decimal).toLocaleString()} ${network.symbol}`}
                   mono
                 />
-                <Record label="Atomic decimals" value="8" mono />
+                <Record label="Decimal places" value="8" mono />
                 <Record
                   label="Coinbase maturity"
                   value={`${network.coinbaseMaturity} blocks`}
                   mono
                 />
                 <Record
-                  label="Observed spacing"
+                  label="Recent average block time"
                   value={
                     network.observedSpacingSeconds
                       ? `${Math.round(network.observedSpacingSeconds)} seconds`
                       : 'Not enough data'
                   }
+                  mono
+                />
+                <Record
+                  label="Issued"
+                  value={`${trimAmount(network.totalIssued.decimal)} ${network.symbol}`}
+                  mono
+                />
+                <Record
+                  label="Difficulty"
+                  value={network.difficulty ?? 'Unavailable'}
                   mono
                 />
               </dl>
@@ -428,38 +423,8 @@ export function NetworkPage() {
         ) : null}
       </ResourceState>
       <section>
-        <h2 className="mb-4 text-xl font-extrabold tracking-[-0.03em]">
-          Canonical reorganization log
-        </h2>
-        {reorgs.envelope?.data.length ? (
-          <div className="space-y-3">
-            {reorgs.envelope.data.map((event) => (
-              <article
-                key={event.eventId}
-                className="panel flex flex-wrap items-center justify-between gap-4 p-5 text-sm"
-              >
-                <div>
-                  <div className="font-bold">
-                    Old tip #{event.oldTipHeight.toLocaleString()}
-                  </div>
-                  <div className="hash mt-1 max-w-sm text-xs text-[var(--muted)]">
-                    {event.oldTipHash}
-                  </div>
-                </div>
-                <div className="text-right text-[var(--muted)]">
-                  <div>Ancestor #{event.commonAncestorHeight ?? 'none'}</div>
-                  <time dateTime={event.detectedAt}>
-                    {relativeTime(event.detectedAt)}
-                  </time>
-                </div>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <div className="panel p-6 text-sm text-[var(--muted)]">
-            No indexed reorganization events.
-          </div>
-        )}
+        <SectionTitle>Reorganizations</SectionTitle>
+        <ReorgTable events={reorgs.envelope?.data ?? []} />
       </section>
     </PageFrame>
   );
@@ -467,49 +432,55 @@ export function NetworkPage() {
 
 function BlockDetailView({ block }: { block: BlockDetail }) {
   const auxpow = block.auxpow;
+  const localProofValid = auxpow?.localValidationState === 'auxpow_verified';
+  const localProofFailed = auxpow
+    ? isFailureState(auxpow.localValidationState)
+    : false;
+
   return (
-    <div className="space-y-8">
-      <div className="flex flex-wrap items-center gap-3">
-        <Link href="/blocks" className="pill">
-          <ArrowLeft size={13} /> All blocks
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <Link href="/blocks" className="button-secondary">
+          <ArrowLeft size={13} aria-hidden="true" /> Blocks
         </Link>
         {block.previousBlockHash ? (
-          <Link href={`/block/${block.previousBlockHash}`} className="pill">
-            <ArrowLeft size={13} /> Previous
+          <Link
+            href={`/block/${block.previousBlockHash}`}
+            className="button-secondary"
+          >
+            <ArrowLeft size={13} aria-hidden="true" /> Previous
           </Link>
         ) : null}
         {block.nextBlockHash ? (
-          <Link href={`/block/${block.nextBlockHash}`} className="pill">
-            Next <ArrowRight size={13} />
+          <Link
+            href={`/block/${block.nextBlockHash}`}
+            className="button-secondary"
+          >
+            Next <ArrowRight size={13} aria-hidden="true" />
           </Link>
         ) : null}
         <a
           href={`/api/v1/blocks/${block.hash}/raw`}
           target="_blank"
           rel="noreferrer"
-          className="pill"
+          className="button-secondary"
         >
-          Raw witness <ExternalLink size={13} />
+          Raw witness <ExternalLink size={13} aria-hidden="true" />
         </a>
-        <span className="pill pill-success">
-          <Check size={13} /> Canonical · {block.confirmations} confirmations
+        <span className="status-label status-label-success ml-auto">
+          <span className="status-dot" aria-hidden="true" />
+          Canonical · {block.confirmations} confirmations
         </span>
       </div>
-      <section className="panel p-6 sm:p-8">
-        <h2 className="text-xl font-extrabold tracking-[-0.03em]">
-          Block identity
-        </h2>
-        <dl className="record-grid mt-6">
+
+      <section className="panel overflow-hidden">
+        <SectionHeader title="Overview" />
+        <dl className="record-grid p-4 sm:p-5">
           <Record label="Block hash" value={block.hash} mono wide />
-          <Record
-            label="Exact witness hash"
-            value={block.witnessHash}
-            mono
-            wide
-          />
+          <Record label="Witness hash" value={block.witnessHash} mono wide />
           <Record label="Mined at" value={relativeTime(block.time)} />
           <Record
-            label="Serialized size"
+            label="Size"
             value={`${block.sizeBytes.toLocaleString()} bytes`}
             mono
           />
@@ -521,10 +492,11 @@ function BlockDetailView({ block }: { block: BlockDetail }) {
             mono
           />
           <Record
-            label="Issued subsidy"
+            label="Block reward"
             value={`${trimAmount(block.reward.decimal)} ${block.reward.symbol}`}
             mono
           />
+          <Record label="Nonce" value={block.nonce} mono wide />
           <Record label="Merkle root" value={block.merkleRoot} mono wide />
           <Record
             label="Block commitments"
@@ -534,152 +506,287 @@ function BlockDetailView({ block }: { block: BlockDetail }) {
           />
         </dl>
       </section>
-      <section id="auxpow" className="panel scroll-mt-28 p-6 sm:p-8">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="eyebrow">Proof ladder</div>
-            <h2 className="mt-2 text-xl font-extrabold tracking-[-0.03em]">
-              AuxPoW evidence
-            </h2>
-          </div>
+
+      <section id="auxpow" className="panel scroll-mt-24 overflow-hidden">
+        <div className="section-heading-row">
+          <h2>AuxPoW</h2>
           {auxpow ? (
-            <span className="pill pill-success">
-              <Check size={13} />{' '}
-              {auxpow.localValidationState === 'auxpow_verified'
-                ? 'AuxPoW verified'
+            <span
+              className={`status-label ${
+                localProofValid
+                  ? 'status-label-success'
+                  : localProofFailed
+                    ? 'status-label-danger'
+                    : 'status-label-info'
+              }`}
+            >
+              <span className="status-dot" aria-hidden="true" />
+              {localProofValid
+                ? 'AuxPoW valid'
                 : humanize(auxpow.localValidationState)}
             </span>
           ) : (
-            <span className="pill">Genesis work</span>
+            <span className="status-label status-label-info">
+              <span className="status-dot" aria-hidden="true" /> Genesis work
+            </span>
           )}
         </div>
         {auxpow ? (
-          <div className="mt-7 space-y-6">
-            <dl className="record-grid">
-              <Record
-                label="Exact Wcash witness"
-                value={humanize(auxpow.exactWitnessState)}
-              />
-              <Record
-                label="Proof format"
-                value={`WCAZ v${auxpow.proofVersion}`}
-                mono
-              />
-              <Record
-                label="Proof size"
-                value={`${auxpow.proofSize.toLocaleString()} bytes`}
-                mono
-              />
-              <Record
-                label="Verifier"
-                value={auxpow.verifierVersion ?? 'Pinned verifier'}
-                mono
-              />
-              <Record
-                label="Parent hash meets header target"
-                value={auxpow.parentHashMeetsClaimedTarget ? 'Yes' : 'No'}
-              />
-              <Record
-                label="Parent-chain lookup"
-                value={humanize(auxpow.parentLookupState)}
-              />
-              <Record
-                label="Parent block hash"
-                value={auxpow.parentBlockHash}
-                mono
-                wide
-              />
-              <Record
-                label="Parent coinbase txid"
-                value={auxpow.parentCoinbaseTxid}
-                mono
-                wide
-              />
-            </dl>
-            <div className="grid gap-3 md:grid-cols-2">
-              <ExternalEvidence
-                href={auxpow.parentBlockUrl}
-                label="Inspect parent block"
-              />
-              <ExternalEvidence
-                href={auxpow.parentCoinbaseTxUrl}
-                label="Inspect parent coinbase"
-              />
-            </div>
-            <div>
-              <h3 className="font-extrabold">Parent observations</h3>
-              <div className="mt-3 space-y-3">
-                {auxpow.observations.map((observation) => (
-                  <article
-                    key={observation.sourceName}
-                    className="rounded-xl border border-[var(--border)] bg-[var(--raised)] p-4 text-sm"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="mono font-bold">
-                        {observation.sourceName}
-                      </span>
-                      <span
-                        className={
-                          observation.observationState === 'canonical'
-                            ? 'pill pill-success'
-                            : 'pill pill-info'
-                        }
-                      >
-                        {humanize(observation.observationState)}
-                      </span>
-                    </div>
-                    <div className="mt-3 text-[var(--muted)]">
-                      Embedded header match:{' '}
-                      <strong className="text-[var(--text)]">
-                        {observation.embeddedHeaderMatches === null
-                          ? 'not checked'
-                          : observation.embeddedHeaderMatches
-                            ? 'yes'
-                            : 'no'}
-                      </strong>
-                      {observation.parentHeight === null
-                        ? ''
-                        : ` · parent height ${observation.parentHeight.toLocaleString()}`}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </div>
-          </div>
+          <AuxPowDetail auxpow={auxpow} />
         ) : (
-          <p className="mt-5 text-sm leading-6 text-[var(--muted)]">
-            Genesis uses its native committed work and has no auxiliary parent
-            proof.
+          <p className="p-5 text-sm text-[var(--muted)]">
+            Genesis has no auxiliary parent proof.
           </p>
         )}
       </section>
+
       <section>
-        <h2 className="mb-4 text-xl font-extrabold tracking-[-0.03em]">
-          Transactions
-        </h2>
+        <SectionTitle>Transactions</SectionTitle>
         <TransactionTable transactions={block.transactions} />
       </section>
+
       {block.valuePools.length ? (
         <section>
-          <h2 className="mb-4 text-xl font-extrabold tracking-[-0.03em]">
-            Public value-pool totals
-          </h2>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {block.valuePools.map((pool) => (
-              <FactCard
-                key={pool.id}
-                icon={<LockKeyhole />}
-                label={humanize(pool.id)}
-                value={
-                  pool.chainValue
-                    ? `${trimAmount(pool.chainValue.decimal)} ${pool.chainValue.symbol}`
-                    : 'Not monitored'
-                }
-              />
-            ))}
+          <SectionTitle>Value pools</SectionTitle>
+          <div className="table-shell">
+            <table className="data-table">
+              <caption className="sr-only">
+                Public Wcash value-pool totals
+              </caption>
+              <thead>
+                <tr>
+                  <th>Pool</th>
+                  <th>Chain value</th>
+                  <th>Block change</th>
+                  <th>Monitored</th>
+                </tr>
+              </thead>
+              <tbody>
+                {block.valuePools.map((pool) => (
+                  <tr key={pool.id}>
+                    <td data-label="Pool">{humanize(pool.id)}</td>
+                    <td data-label="Chain value" className="mono">
+                      {formatAmount(pool.chainValue, 'Not monitored')}
+                    </td>
+                    <td data-label="Block change" className="mono">
+                      {formatAmount(pool.valueDelta, 'Not reported')}
+                    </td>
+                    <td data-label="Monitored">
+                      {pool.monitored === null
+                        ? 'Unknown'
+                        : pool.monitored
+                          ? 'Yes'
+                          : 'No'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </section>
       ) : null}
+    </div>
+  );
+}
+
+function AuxPowDetail({ auxpow }: { auxpow: AuxPowEvidence }) {
+  return (
+    <div>
+      <div className="proof-grid">
+        <ProofStage number="01" title="Wcash witness">
+          <CompactRecord
+            label="State"
+            value={humanize(auxpow.exactWitnessState)}
+          />
+          <CompactRecord
+            label="Confirmations"
+            value={
+              auxpow.witnessConfirmations?.toLocaleString() ?? 'Unavailable'
+            }
+          />
+          <CompactRecord label="Witness hash" value={auxpow.witnessHash} mono />
+        </ProofStage>
+        <ProofStage number="02" title="Local validation">
+          <CompactRecord
+            label="State"
+            value={humanize(auxpow.localValidationState)}
+          />
+          <CompactRecord
+            label="Format"
+            value={`WCAZ v${auxpow.proofVersion} · ${auxpow.proofSize.toLocaleString()} bytes`}
+            mono
+          />
+          <CompactRecord
+            label="Verifier"
+            value={auxpow.verifierVersion ?? 'Pinned verifier'}
+            mono
+          />
+          <CompactRecord
+            label="Parent hash meets target"
+            value={auxpow.parentHashMeetsClaimedTarget ? 'Met' : 'Not met'}
+          />
+          <CompactRecord
+            label="Checked at"
+            value={relativeTime(auxpow.verifiedAt)}
+          />
+        </ProofStage>
+        <ProofStage number="03" title="Zcash lookup">
+          <CompactRecord
+            label="State"
+            value={humanize(auxpow.parentLookupState)}
+          />
+          <CompactRecord
+            label="Source states agree"
+            value={
+              auxpow.parentSourcesAgree
+                ? 'Yes'
+                : auxpow.parentLookupState === 'disagreement'
+                  ? 'No — disagreement'
+                  : 'Agreement not established'
+            }
+          />
+          <CompactRecord
+            label="Header bits"
+            value={auxpow.parentHeaderBits}
+            mono
+          />
+          <CompactRecord
+            label="Parent block"
+            value={auxpow.parentBlockHash}
+            mono
+          />
+        </ProofStage>
+      </div>
+
+      <div className="border-t border-[var(--border)] p-4 sm:p-5">
+        <dl className="record-grid">
+          <Record
+            label="Parent block hash"
+            value={auxpow.parentBlockHash}
+            mono
+            wide
+          />
+          <Record
+            label="Parent coinbase txid"
+            value={auxpow.parentCoinbaseTxid}
+            mono
+            wide
+          />
+          <Record
+            label="Parent Merkle path"
+            value={`depth ${auxpow.parentMerkleDepth}, index ${auxpow.parentCoinbaseIndex}`}
+            mono
+          />
+          <Record
+            label="Auth-data Merkle path"
+            value={`depth ${auxpow.authDataMerkleDepth}, index ${auxpow.authDataCoinbaseIndex}`}
+            mono
+          />
+          <Record
+            label="Auxiliary Merkle path"
+            value={`depth ${auxpow.auxiliaryMerkleDepth}, index ${auxpow.auxiliaryIndex}`}
+            mono
+          />
+          <Record label="Verifier note" value={auxpow.meaning} />
+        </dl>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <ExternalEvidence
+            href={auxpow.parentBlockUrl}
+            label="Open Zcash block"
+          />
+          <ExternalEvidence
+            href={auxpow.parentCoinbaseTxUrl}
+            label="Open coinbase transaction"
+          />
+        </div>
+      </div>
+
+      <div className="border-t border-[var(--border)]">
+        <div className="section-heading-row">
+          <h3>Zcash source checks</h3>
+        </div>
+        <ParentObservationTable observations={auxpow.observations} />
+      </div>
+    </div>
+  );
+}
+
+function ParentObservationTable({
+  observations,
+}: {
+  observations: ParentObservation[];
+}) {
+  if (!observations.length) {
+    return (
+      <p className="p-5 text-sm text-[var(--muted)]">No parent observations.</p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="data-table">
+        <caption className="sr-only">Zcash parent-node observations</caption>
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th>State</th>
+            <th>Parent</th>
+            <th>Embedded header</th>
+            <th>Work</th>
+            <th>Checked (UTC)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {observations.map((observation) => (
+            <tr key={`${observation.sourceName}:${observation.checkedAt}`}>
+              <td data-label="Source" className="mono">
+                {observation.sourceName}
+              </td>
+              <td data-label="State">
+                <span
+                  className={`status-label ${parentObservationClass(observation)}`}
+                >
+                  <span className="status-dot" aria-hidden="true" />
+                  {humanize(observation.observationState)}
+                </span>
+              </td>
+              <td data-label="Parent" className="mono">
+                {observation.parentHeight === null
+                  ? 'Height unavailable'
+                  : `#${observation.parentHeight.toLocaleString()}`}
+                <span className="mt-1 block text-[var(--faint)]">
+                  {observation.parentConfirmations === null
+                    ? 'Confirmations unavailable'
+                    : `${observation.parentConfirmations.toLocaleString()} confirmations`}
+                </span>
+              </td>
+              <td data-label="Embedded header">
+                {observation.embeddedHeaderMatches === null
+                  ? 'Not checked'
+                  : observation.embeddedHeaderMatches
+                    ? 'Matches'
+                    : 'Mismatch'}
+              </td>
+              <td data-label="Work" className="mono">
+                <span>{observation.parentBits ?? 'Bits unavailable'}</span>
+                <span className="mt-1 block text-[var(--faint)]">
+                  {observation.parentDifficultyText
+                    ? `Difficulty ${observation.parentDifficultyText}`
+                    : 'Difficulty unavailable'}
+                </span>
+              </td>
+              <td data-label="Checked (UTC)" className="whitespace-nowrap">
+                <span>{relativeTime(observation.checkedAt)}</span>
+                {observation.parentTime ? (
+                  <span className="mt-1 block text-[var(--faint)]">
+                    Parent {relativeTime(observation.parentTime)}
+                  </span>
+                ) : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -689,24 +796,21 @@ function TransactionDetailView({
 }: {
   transaction: TransactionDetail;
 }) {
-  const shieldedActions =
-    transaction.saplingSpendCount +
-    transaction.saplingOutputCount +
-    transaction.orchardActionCount +
-    transaction.ironwoodActionCount;
+  const shieldedActions = countShieldedActions(transaction);
+
   return (
-    <div className="space-y-8">
-      <section className="panel p-6 sm:p-8">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <span className="pill pill-info">{humanize(transaction.kind)}</span>
+    <div className="space-y-6">
+      <section className="panel overflow-hidden">
+        <div className="section-heading-row">
+          <h2>Overview</h2>
           <Link
             href={`/block/${transaction.blockHeight}`}
-            className="text-sm font-bold text-[var(--brand)]"
+            className="text-xs font-semibold text-[var(--brand)]"
           >
             Block #{transaction.blockHeight.toLocaleString()}
           </Link>
         </div>
-        <dl className="record-grid mt-6">
+        <dl className="record-grid p-4 sm:p-5">
           <Record label="Transaction ID" value={transaction.txid} mono wide />
           <Record
             label="Authorization digest"
@@ -714,24 +818,34 @@ function TransactionDetailView({
             mono
             wide
           />
+          <Record label="Kind" value={humanize(transaction.kind)} />
           <Record label="Version" value={transaction.version.toString()} mono />
           <Record
-            label="Serialized size"
+            label="Size"
             value={`${transaction.sizeBytes.toLocaleString()} bytes`}
             mono
           />
           <Record
-            label="Public output total"
+            label="Position in block"
+            value={transaction.position.toString()}
+            mono
+          />
+          <Record
+            label="Transparent output total"
             value={`${trimAmount(transaction.publicOutputValue.decimal)} ${transaction.publicOutputValue.symbol}`}
             mono
           />
           <Record
             label="Fee"
-            value={
-              transaction.fee
-                ? `${trimAmount(transaction.fee.decimal)} ${transaction.fee.symbol}`
-                : 'Not available'
-            }
+            value={formatAmount(
+              transaction.fee,
+              transaction.isCoinbase ? 'Not applicable' : 'Not reported',
+            )}
+            mono
+          />
+          <Record
+            label="Value balance"
+            value={formatAmount(transaction.valueBalance, 'Not present')}
             mono
           />
           <Record
@@ -744,47 +858,128 @@ function TransactionDetailView({
             value={shieldedActions.toString()}
             mono
           />
+          <Record
+            label="Block time"
+            value={relativeTime(transaction.blockTime)}
+          />
         </dl>
       </section>
+
       {shieldedActions > 0 ? (
         <PrivacyNotice text={transaction.privacyNotice} />
       ) : null}
+
       <section>
-        <h2 className="mb-4 text-xl font-extrabold tracking-[-0.03em]">
-          Transparent inputs
-        </h2>
-        <div className="space-y-3">
-          {transaction.inputs.map((input) => (
-            <article key={input.inputIndex} className="panel p-5 text-sm">
-              <div className="eyebrow">Input {input.inputIndex}</div>
-              <div className="hash mt-3">
-                {input.coinbaseData
-                  ? `Coinbase ${input.coinbaseData}`
-                  : `${input.previousTxid}:${input.previousOutputIndex}`}
-              </div>
-            </article>
-          ))}
+        <SectionTitle>Shielded structure</SectionTitle>
+        <div className="stats-strip">
+          <SummaryMetric
+            label="Sapling spends"
+            value={transaction.saplingSpendCount.toString()}
+          />
+          <SummaryMetric
+            label="Sapling outputs"
+            value={transaction.saplingOutputCount.toString()}
+          />
+          <SummaryMetric
+            label="Orchard actions"
+            value={transaction.orchardActionCount.toString()}
+          />
+          <SummaryMetric
+            label="Ironwood actions"
+            value={transaction.ironwoodActionCount.toString()}
+          />
         </div>
       </section>
+
       <section>
-        <h2 className="mb-4 text-xl font-extrabold tracking-[-0.03em]">
-          Transparent outputs
-        </h2>
-        <div className="space-y-3">
-          {transaction.outputs.map((output) => (
-            <article
-              key={output.index}
-              className="panel grid gap-3 p-5 text-sm sm:grid-cols-[100px_1fr_auto]"
-            >
-              <span className="eyebrow">Output {output.index}</span>
-              <span className="hash">
-                {output.address ?? output.scriptType ?? 'Non-address script'}
-              </span>
-              <span className="mono font-bold">
-                {trimAmount(output.value.decimal)} {output.value.symbol}
-              </span>
-            </article>
-          ))}
+        <SectionTitle>Transparent inputs</SectionTitle>
+        <div className="table-shell">
+          <table className="data-table">
+            <caption className="sr-only">
+              Transparent transaction inputs
+            </caption>
+            <thead>
+              <tr>
+                <th>Index</th>
+                <th>Source</th>
+                <th>Sequence</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transaction.inputs.length ? (
+                transaction.inputs.map((input) => (
+                  <tr key={input.inputIndex}>
+                    <td data-label="Index" className="mono">
+                      {input.inputIndex}
+                    </td>
+                    <td
+                      data-label="Source"
+                      data-wide="true"
+                      className="mono break-all"
+                    >
+                      {input.coinbaseData
+                        ? `Coinbase ${input.coinbaseData}`
+                        : `${input.previousTxid}:${input.previousOutputIndex}`}
+                    </td>
+                    <td data-label="Sequence" className="mono">
+                      {input.sequence?.toString() ?? '—'}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={3}>No transparent inputs.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <SectionTitle>Transparent outputs</SectionTitle>
+        <div className="table-shell">
+          <table className="data-table">
+            <caption className="sr-only">
+              Transparent transaction outputs
+            </caption>
+            <thead>
+              <tr>
+                <th>Index</th>
+                <th>Address or script</th>
+                <th>Type</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transaction.outputs.length ? (
+                transaction.outputs.map((output) => (
+                  <tr key={output.index}>
+                    <td data-label="Index" className="mono">
+                      {output.index}
+                    </td>
+                    <td
+                      data-label="Address or script"
+                      data-wide="true"
+                      className="mono break-all"
+                    >
+                      {output.address ??
+                        output.scriptHex ??
+                        'Non-address script'}
+                    </td>
+                    <td data-label="Type">{output.scriptType ?? 'Unknown'}</td>
+                    <td data-label="Value" className="mono whitespace-nowrap">
+                      {trimAmount(output.value.decimal)} {output.value.symbol}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={4}>No transparent outputs.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </section>
     </div>
@@ -793,34 +988,50 @@ function TransactionDetailView({
 
 function AddressDetailView({ address }: { address: AddressDetail }) {
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <PrivacyNotice text={address.scopeNotice} />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <FactCard
-          icon={<WalletCards />}
-          label="Unspent"
-          value={`${trimAmount(address.unspent.decimal)} ${address.unspent.symbol}`}
+      <section className="panel overflow-hidden">
+        <SectionHeader title="Overview" />
+        <dl className="record-grid p-4 sm:p-5">
+          <Record label="Address" value={address.address} mono wide />
+          <Record label="Type" value={humanize(address.addressType)} />
+          <Record
+            label="UTXOs"
+            value={address.utxoCount.toLocaleString()}
+            mono
+          />
+          <Record
+            label="Mined outputs"
+            value={address.minedOutputCount.toLocaleString()}
+            mono
+          />
+          <Record
+            label="Coinbase maturity"
+            value={`${address.coinbaseMaturity.toLocaleString()} blocks`}
+            mono
+          />
+        </dl>
+      </section>
+      <div className="stats-strip">
+        <SummaryMetric
+          label="Transparent unspent"
+          value={formatAmount(address.unspent)}
         />
-        <FactCard
-          icon={<Coins />}
-          label="Total received"
-          value={`${trimAmount(address.totalReceived.decimal)} ${address.totalReceived.symbol}`}
+        <SummaryMetric
+          label="Transparent received"
+          value={formatAmount(address.totalReceived)}
         />
-        <FactCard
-          icon={<Pickaxe />}
+        <SummaryMetric
           label="Immature coinbase"
-          value={`${trimAmount(address.immatureCoinbase.decimal)} ${address.immatureCoinbase.symbol}`}
+          value={formatAmount(address.immatureCoinbase)}
         />
-        <FactCard
-          icon={<ShieldCheck />}
-          label="Mature; must shield"
-          value={`${trimAmount(address.matureCoinbaseMustShield.decimal)} ${address.matureCoinbaseMustShield.symbol}`}
+        <SummaryMetric
+          label="Mature coinbase requiring shielding"
+          value={formatAmount(address.matureCoinbaseMustShield)}
         />
       </div>
       <section>
-        <h2 className="mb-4 text-xl font-extrabold tracking-[-0.03em]">
-          Latest received outputs
-        </h2>
+        <SectionTitle>Received outputs</SectionTitle>
         <div className="table-shell">
           <table className="data-table">
             <caption className="sr-only">
@@ -835,41 +1046,49 @@ function AddressDetailView({ address }: { address: AddressDetail }) {
               </tr>
             </thead>
             <tbody>
-              {address.activity.map((activity) => (
-                <tr
-                  key={`${activity.txid}:${activity.authDigest}:${activity.blockHash}`}
-                >
-                  <td data-label="Block">
-                    <Link
-                      href={`/block/${activity.blockHeight}`}
-                      className="mono text-[var(--brand)]"
+              {address.activity.length ? (
+                address.activity.map((activity) => (
+                  <tr
+                    key={`${activity.txid}:${activity.authDigest}:${activity.blockHash}`}
+                  >
+                    <td data-label="Block">
+                      <Link
+                        href={`/block/${activity.blockHeight}`}
+                        className="mono text-[var(--brand)]"
+                      >
+                        #{activity.blockHeight}
+                      </Link>
+                    </td>
+                    <td data-label="Transaction" data-wide="true">
+                      <Link
+                        href={`/tx/${activity.txid}?block=${activity.blockHash}`}
+                        className="hash block"
+                      >
+                        {middleEllipsis(activity.txid, 28)}
+                      </Link>
+                      <span className="sr-only">
+                        {' '}
+                        Authorization digest {activity.authDigest}
+                      </span>
+                    </td>
+                    <td
+                      data-label="Received"
+                      className="mono whitespace-nowrap"
                     >
-                      #{activity.blockHeight}
-                    </Link>
-                  </td>
-                  <td data-label="Transaction" data-wide="true">
-                    <Link
-                      href={`/tx/${activity.txid}?block=${activity.blockHash}`}
-                      className="hash block"
-                    >
-                      {middleEllipsis(activity.txid, 24)}
-                    </Link>
-                    <span className="sr-only">
-                      {' '}
-                      Authorization digest {activity.authDigest}
-                    </span>
-                  </td>
-                  <td data-label="Received" className="mono">
-                    {trimAmount(activity.received.decimal)}{' '}
-                    {activity.received.symbol}
-                  </td>
-                  <td data-label="Time (UTC)">
-                    <time dateTime={activity.blockTime}>
-                      {relativeTime(activity.blockTime)}
-                    </time>
-                  </td>
+                      {formatAmount(activity.received)}
+                    </td>
+                    <td data-label="Time (UTC)" className="whitespace-nowrap">
+                      <time dateTime={activity.blockTime}>
+                        {relativeTime(activity.blockTime)}
+                      </time>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={4}>No received outputs.</td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>
@@ -883,12 +1102,14 @@ function TransactionTable({
 }: {
   transactions: TransactionSummary[];
 }) {
-  if (!transactions.length)
+  if (!transactions.length) {
     return (
-      <div className="panel p-6 text-sm text-[var(--muted)]">
-        No canonical transactions are indexed here.
+      <div className="panel p-5 text-sm text-[var(--muted)]">
+        No transactions found.
       </div>
     );
+  }
+
   return (
     <div className="table-shell">
       <table className="data-table">
@@ -900,60 +1121,109 @@ function TransactionTable({
             <th>Transaction ID</th>
             <th>Kind</th>
             <th>Block</th>
-            <th>Public output</th>
+            <th>Transparent output</th>
             <th>Shielded actions</th>
             <th>Time (UTC)</th>
           </tr>
         </thead>
         <tbody>
-          {transactions.map((transaction) => {
-            const shielded =
-              transaction.saplingSpendCount +
-              transaction.saplingOutputCount +
-              transaction.orchardActionCount +
-              transaction.ironwoodActionCount;
-            return (
-              <tr key={`${transaction.txid}:${transaction.authDigest}`}>
-                <td data-label="Transaction ID" data-wide="true">
-                  <Link
-                    href={`/tx/${transaction.txid}?block=${transaction.blockHash}`}
-                    className="hash block"
-                  >
-                    {middleEllipsis(transaction.txid, 26)}
-                  </Link>
-                  <span className="sr-only">
-                    {' '}
-                    Authorization digest {transaction.authDigest}
+          {transactions.map((transaction) => (
+            <tr key={`${transaction.txid}:${transaction.authDigest}`}>
+              <td data-label="Transaction ID" data-wide="true">
+                <Link
+                  href={`/tx/${transaction.txid}?block=${transaction.blockHash}`}
+                  className="hash block"
+                >
+                  {middleEllipsis(transaction.txid, 28)}
+                </Link>
+                <span className="sr-only">
+                  {' '}
+                  Authorization digest {transaction.authDigest}
+                </span>
+              </td>
+              <td data-label="Kind">{humanize(transaction.kind)}</td>
+              <td data-label="Block">
+                <Link
+                  href={`/block/${transaction.blockHeight}`}
+                  className="mono text-[var(--brand)]"
+                >
+                  #{transaction.blockHeight.toLocaleString()}
+                </Link>
+              </td>
+              <td
+                data-label="Transparent output"
+                className="mono whitespace-nowrap"
+              >
+                {formatAmount(transaction.publicOutputValue)}
+              </td>
+              <td data-label="Shielded actions" className="mono">
+                {countShieldedActions(transaction)}
+              </td>
+              <td data-label="Time (UTC)" className="whitespace-nowrap">
+                <time dateTime={transaction.blockTime}>
+                  {relativeTime(transaction.blockTime)}
+                </time>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReorgTable({ events }: { events: Reorg[] }) {
+  if (!events.length) {
+    return (
+      <div className="panel p-5 text-sm text-[var(--muted)]">
+        No reorganizations recorded.
+      </div>
+    );
+  }
+
+  return (
+    <div className="table-shell">
+      <table className="data-table">
+        <caption className="sr-only">Canonical chain reorganizations</caption>
+        <thead>
+          <tr>
+            <th>Old tip</th>
+            <th>Common ancestor</th>
+            <th>Detected (UTC)</th>
+            <th>Completed (UTC)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {events.map((event) => (
+            <tr key={event.eventId}>
+              <td data-label="Old tip" data-wide="true">
+                <span className="mono">
+                  #{event.oldTipHeight.toLocaleString()}
+                </span>
+                <span className="hash mt-1 block max-w-xs text-[var(--faint)]">
+                  {middleEllipsis(event.oldTipHash, 28)}
+                </span>
+              </td>
+              <td data-label="Common ancestor" data-wide="true">
+                <span className="mono">
+                  #{event.commonAncestorHeight ?? '—'}
+                </span>
+                {event.commonAncestorHash ? (
+                  <span className="hash mt-1 block max-w-xs text-[var(--faint)]">
+                    {middleEllipsis(event.commonAncestorHash, 28)}
                   </span>
-                </td>
-                <td data-label="Kind">
-                  <span className="pill pill-info">
-                    {humanize(transaction.kind)}
-                  </span>
-                </td>
-                <td data-label="Block">
-                  <Link
-                    href={`/block/${transaction.blockHeight}`}
-                    className="mono text-[var(--brand)]"
-                  >
-                    #{transaction.blockHeight.toLocaleString()}
-                  </Link>
-                </td>
-                <td data-label="Public output" className="mono">
-                  {trimAmount(transaction.publicOutputValue.decimal)}{' '}
-                  {transaction.publicOutputValue.symbol}
-                </td>
-                <td data-label="Shielded actions" className="mono">
-                  {shielded}
-                </td>
-                <td data-label="Time (UTC)">
-                  <time dateTime={transaction.blockTime}>
-                    {relativeTime(transaction.blockTime)}
-                  </time>
-                </td>
-              </tr>
-            );
-          })}
+                ) : null}
+              </td>
+              <td data-label="Detected (UTC)" className="whitespace-nowrap">
+                {relativeTime(event.detectedAt)}
+              </td>
+              <td data-label="Completed (UTC)" className="whitespace-nowrap">
+                {event.completedAt
+                  ? relativeTime(event.completedAt)
+                  : 'In progress'}
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -969,18 +1239,16 @@ function PageFrame({
   eyebrow: string;
   title: string;
   description: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <div className="space-y-8">
-      <header className="max-w-4xl">
-        <div className="eyebrow">{eyebrow}</div>
-        <h1 className="mt-3 text-[clamp(2.2rem,5vw,4.8rem)] font-extrabold leading-none tracking-[-0.06em]">
-          {title}
-        </h1>
-        <p className="mt-5 max-w-3xl text-base leading-7 text-[var(--muted)] sm:text-lg">
-          {description}
-        </p>
+    <div className="space-y-6">
+      <header className="page-intro">
+        <div>
+          <div className="eyebrow">{eyebrow}</div>
+          <h1 className="page-title">{title}</h1>
+          <p className="page-description">{description}</p>
+        </div>
       </header>
       {children}
     </div>
@@ -994,43 +1262,46 @@ function ResourceState({
 }: {
   loading: boolean;
   error: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
-  if (loading)
+  if (loading) {
     return (
       <output
-        className="skeleton block h-72"
+        className="skeleton block h-64"
         aria-label="Loading indexed chain data"
       >
         <span className="sr-only">Loading indexed chain data</span>
       </output>
     );
-  if (error)
+  }
+  if (error) {
     return (
       <div
         role="alert"
-        className="panel flex items-start gap-3 border-[var(--danger)] p-6"
+        className="panel flex items-start gap-3 border-[var(--danger)] p-5"
       >
-        <AlertTriangle className="mt-0.5 shrink-0 text-[var(--danger)]" />
+        <AlertTriangle
+          className="mt-0.5 shrink-0 text-[var(--danger)]"
+          size={18}
+        />
         <div>
-          <div className="font-extrabold">Explorer data unavailable</div>
-          <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-            {error} No chain facts are substituted with sample data.
-          </p>
+          <div className="font-semibold">Explorer data unavailable</div>
+          <p className="mt-1 text-sm leading-6 text-[var(--muted)]">{error}</p>
         </div>
       </div>
     );
+  }
   return <>{children}</>;
 }
 
 function PreviewNotice() {
   return (
     <div className="panel flex items-start gap-3 border-[var(--warning)] p-4 text-sm">
-      <AlertTriangle className="shrink-0 text-[var(--warning)]" size={18} />
-      <p>
-        <strong>Local interface preview.</strong> These fixed snapshots are
-        visibly labeled and are never enabled by default in production.
-      </p>
+      <AlertTriangle
+        className="mt-0.5 shrink-0 text-[var(--warning)]"
+        size={16}
+      />
+      <p>Showing a fixed local snapshot.</p>
     </div>
   );
 }
@@ -1048,56 +1319,53 @@ function Pagination({
 }) {
   if (!canGoBack && !canGoForward) return null;
   return (
-    <nav aria-label="Pagination" className="mt-5 flex justify-end gap-3">
+    <nav aria-label="Pagination" className="mt-4 flex justify-end gap-2">
       <button
         type="button"
         disabled={!canGoBack}
         onClick={onBack}
-        className="pill disabled:opacity-40"
+        className="button-secondary disabled:opacity-40"
       >
-        <ArrowLeft size={13} /> Newest
+        <ArrowLeft size={13} aria-hidden="true" /> Newest
       </button>
       <button
         type="button"
         disabled={!canGoForward}
         onClick={onForward}
-        className="pill disabled:opacity-40"
+        className="button-secondary disabled:opacity-40"
       >
-        Older <ArrowRight size={13} />
+        Older <ArrowRight size={13} aria-hidden="true" />
       </button>
     </nav>
   );
 }
 
-function FactCard({
-  icon,
-  label,
-  value,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-}) {
+function SummaryMetric({ label, value }: { label: string; value: string }) {
   return (
-    <article className="panel min-w-0 p-5">
-      <div className="flex items-center justify-between gap-3 text-[var(--muted)]">
-        <span className="text-xs font-bold uppercase tracking-[0.08em]">
-          {label}
-        </span>
-        <span className="text-[var(--brand)]">{icon}</span>
-      </div>
-      <div className="mono mt-4 break-words text-lg font-extrabold">
-        {value}
-      </div>
-    </article>
+    <div className="stat-cell">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value">{value}</div>
+    </div>
   );
+}
+
+function SectionHeader({ title }: { title: string }) {
+  return (
+    <div className="section-heading-row">
+      <h2>{title}</h2>
+    </div>
+  );
+}
+
+function SectionTitle({ children }: { children: ReactNode }) {
+  return <h2 className="mb-3 text-base font-semibold">{children}</h2>;
 }
 
 function Definition({ title, body }: { title: string; body: string }) {
   return (
-    <div>
-      <h3 className="font-extrabold">{title}</h3>
-      <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{body}</p>
+    <div className="definition-cell">
+      <h3 className="text-sm font-semibold">{title}</h3>
+      <p className="mt-2 text-xs leading-5 text-[var(--muted)]">{body}</p>
     </div>
   );
 }
@@ -1115,12 +1383,51 @@ function Record({
 }) {
   return (
     <div className={wide ? 'record-wide min-w-0' : 'min-w-0'}>
-      <dt className="text-xs font-bold uppercase tracking-[0.08em] text-[var(--faint)]">
-        {label}
-      </dt>
+      <dt className="stat-label">{label}</dt>
       <dd
-        className={`${mono ? 'mono' : ''} mt-2 break-all text-sm font-semibold leading-6`}
+        className={`${mono ? 'mono break-all' : ''} mt-1.5 text-sm leading-6`}
       >
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+function ProofStage({
+  number,
+  title,
+  children,
+}: {
+  number: string;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="proof-stage">
+      <div className="flex items-baseline gap-2">
+        <span className="mono text-[0.65rem] text-[var(--faint)]">
+          {number}
+        </span>
+        <h3 className="text-sm font-semibold">{title}</h3>
+      </div>
+      <dl className="mt-4 space-y-3">{children}</dl>
+    </section>
+  );
+}
+
+function CompactRecord({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[0.67rem] text-[var(--faint)]">{label}</dt>
+      <dd className={`${mono ? 'mono break-all' : ''} mt-1 text-xs leading-5`}>
         {value}
       </dd>
     </div>
@@ -1133,22 +1440,58 @@ function ExternalEvidence({ href, label }: { href: string; label: string }) {
       href={href}
       target="_blank"
       rel="noreferrer"
-      className="flex min-h-12 items-center justify-center gap-2 rounded-xl border border-[var(--border-strong)] text-sm font-bold hover:bg-[var(--raised)]"
+      className="button-secondary"
     >
-      {label}
-      <ExternalLink size={15} />
+      {label} <ExternalLink size={13} aria-hidden="true" />
     </a>
   );
 }
 
 function PrivacyNotice({ text }: { text: string }) {
   return (
-    <aside className="panel flex items-start gap-4 border-[var(--mint)] p-5">
-      <FileKey className="mt-0.5 shrink-0 text-[var(--mint)]" />
-      <div>
-        <div className="font-extrabold">Privacy boundary</div>
-        <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{text}</p>
-      </div>
+    <aside className="border-l-2 border-[var(--brand)] py-1 pl-4">
+      <div className="text-sm font-semibold">Shielded data</div>
+      <p className="mt-1 max-w-4xl text-sm leading-6 text-[var(--muted)]">
+        {text}
+      </p>
     </aside>
   );
+}
+
+function countShieldedActions(transaction: TransactionSummary) {
+  return (
+    transaction.saplingSpendCount +
+    transaction.saplingOutputCount +
+    transaction.orchardActionCount +
+    transaction.ironwoodActionCount
+  );
+}
+
+function parentObservationClass(observation: ParentObservation) {
+  const state = observation.observationState.toLowerCase();
+  if (
+    observation.embeddedHeaderMatches === false ||
+    ['disagreement', 'invalid', 'rejected', 'error'].some((failure) =>
+      state.includes(failure),
+    )
+  ) {
+    return 'status-label-danger';
+  }
+  if (state === 'canonical') return 'status-label-success';
+  if (state.includes('orphan')) return 'status-label-warning';
+  return 'status-label-info';
+}
+
+function isFailureState(value: string) {
+  const state = value.toLowerCase();
+  return ['error', 'failed', 'invalid', 'rejected', 'unavailable'].some(
+    (failure) => state.includes(failure),
+  );
+}
+
+function formatAmount(
+  amount: { decimal: string; symbol: string } | null,
+  fallback = 'Unavailable',
+) {
+  return amount ? `${trimAmount(amount.decimal)} ${amount.symbol}` : fallback;
 }
