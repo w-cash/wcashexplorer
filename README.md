@@ -124,13 +124,18 @@ The public API is read-only and rooted at `/api/v1`:
 - `GET /blocks/{height-or-hash}/auxpow`
 - `GET /transactions` and `GET /transactions/{txid}`
 - `GET /addresses/{transparent-address}`
+- `GET /addresses/stats` and `GET /addresses/rich-list`
+- `GET /network/history` and `GET /value-pools/history`
+- `GET /merge-mining/stats`
 - `GET /reorgs`
 - `GET /search?q=...`
 
 Pagination uses opaque cursors. Atomic amounts are serialized as strings so
 JavaScript clients cannot silently lose precision. Transaction identity retains
 both `txid` and the ZIP-244 authorization digest; callers may provide a block
-hash when resolving a transaction instance.
+hash when resolving a transaction instance. Analytics responses are anchored to
+one repeatable-read canonical snapshot, and detached reorganization data is
+excluded from public search, balances, histories, and rankings.
 
 Operational probes are available at `GET /health/live` and
 `GET /health/ready`. Readiness requires a fresh heartbeat, a valid canonical

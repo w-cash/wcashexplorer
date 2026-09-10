@@ -4,19 +4,27 @@
 //! persisting reorg-sensitive rollups. Detached blocks remain available for
 //! audit without leaking into public totals.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
-    Json, Router,
+    BoxError, Json, Router,
+    error_handling::HandleErrorLayer,
     extract::{Query, State},
+    http::{HeaderValue, header},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use tower::{ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::{
-    api::{AmountView, AppState, amount, chain_state, envelope},
+    api::{
+        AmountView, AppState, address, amount, amount_from_zatoshi_text, envelope, read_snapshot,
+        snapshot_chain_state,
+    },
     error::{ExplorerError, Result},
     models::ApiEnvelope,
 };
@@ -25,14 +33,37 @@ const DEFAULT_HISTORY_LIMIT: u16 = 240;
 const MAX_HISTORY_LIMIT: u16 = 2_048;
 const DEFAULT_RICH_LIST_LIMIT: u16 = 50;
 const MAX_RICH_LIST_LIMIT: u16 = 100;
+const ANALYTICS_CONCURRENCY_LIMIT: usize = 4;
 
 pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/v1/network/history", get(network_history))
         .route("/api/v1/value-pools/history", get(value_pool_history))
+        .route("/api/v1/addresses/{address}", get(address))
         .route("/api/v1/addresses/stats", get(address_stats))
         .route("/api/v1/addresses/rich-list", get(rich_list))
         .route("/api/v1/merge-mining/stats", get(merge_mining_stats))
+        .layer(
+            ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(analytics_capacity_error))
+                .layer(TimeoutLayer::new(Duration::from_secs(8)))
+                .layer(ConcurrencyLimitLayer::new(ANALYTICS_CONCURRENCY_LIMIT))
+                .layer(SetResponseHeaderLayer::if_not_present(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=5, stale-while-revalidate=15"),
+                )),
+        )
+}
+
+async fn analytics_capacity_error(_error: BoxError) -> Response {
+    let mut response = ExplorerError::NotReady(
+        "analytics capacity is temporarily busy; retry the request".to_owned(),
+    )
+    .into_response();
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("2"));
+    response
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,18 +81,20 @@ async fn network_history(
     State(state): State<Arc<AppState>>,
     Query(query): Query<HistoryQuery>,
 ) -> Result<Json<ApiEnvelope<NetworkHistoryView>>> {
-    let chain = chain_state(&state).await?;
     let limit = history_limit(query.limit);
     let before = query
         .before
         .map(|value| i64::try_from(value).map_err(|_| height_error()))
         .transpose()?;
+    let mut transaction = read_snapshot(&state).await?;
+    let chain = snapshot_chain_state(&mut transaction, &state.network.id).await?;
     let rows = sqlx::query_as::<_, NetworkHistoryRow>(NETWORK_HISTORY_QUERY)
         .bind(&state.network.id)
         .bind(before)
         .bind(i64::from(limit))
-        .fetch_all(state.database.pool())
+        .fetch_all(&mut *transaction)
         .await?;
+    transaction.commit().await?;
     let points = rows
         .into_iter()
         .map(|row| {
@@ -92,17 +125,18 @@ async fn value_pool_history(
     State(state): State<Arc<AppState>>,
     Query(query): Query<HistoryQuery>,
 ) -> Result<Json<ApiEnvelope<ValuePoolHistoryView>>> {
-    let chain = chain_state(&state).await?;
     let limit = history_limit(query.limit);
     let before = query
         .before
         .map(|value| i64::try_from(value).map_err(|_| height_error()))
         .transpose()?;
+    let mut transaction = read_snapshot(&state).await?;
+    let chain = snapshot_chain_state(&mut transaction, &state.network.id).await?;
     let rows = sqlx::query_as::<_, ValuePoolHistoryRow>(VALUE_POOL_HISTORY_QUERY)
         .bind(&state.network.id)
         .bind(before)
         .bind(i64::from(limit))
-        .fetch_all(state.database.pool())
+        .fetch_all(&mut *transaction)
         .await?;
     let points = rows
         .into_iter()
@@ -145,8 +179,9 @@ async fn value_pool_history(
            )",
     )
     .bind(&state.network.id)
-    .fetch_one(state.database.pool())
+    .fetch_one(&mut *transaction)
     .await?;
+    transaction.commit().await?;
     let data = ValuePoolHistoryView {
         as_of_height: optional_height(chain.indexed_height)?,
         as_of_hash: chain.indexed_hash.clone(),
@@ -160,11 +195,13 @@ async fn value_pool_history(
 async fn merge_mining_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ApiEnvelope<MergeMiningStatsView>>> {
-    let chain = chain_state(&state).await?;
+    let mut transaction = read_snapshot(&state).await?;
+    let chain = snapshot_chain_state(&mut transaction, &state.network.id).await?;
     let row = sqlx::query_as::<_, MergeMiningStatsRow>(MERGE_MINING_STATS_QUERY)
         .bind(&state.network.id)
-        .fetch_one(state.database.pool())
+        .fetch_one(&mut *transaction)
         .await?;
+    transaction.commit().await?;
     let anomaly_blocks = row
         .eligible_child_blocks
         .saturating_sub(row.fully_verified_blocks);
@@ -199,25 +236,12 @@ async fn rich_list(
         .limit
         .unwrap_or(DEFAULT_RICH_LIST_LIMIT)
         .clamp(1, MAX_RICH_LIST_LIMIT);
-    let mut transaction = state.database.pool().begin().await?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *transaction)
-        .await?;
-    let chain = sqlx::query_as::<_, crate::api::ChainStateRow>(
-        "SELECT indexed_height, indexed_hash, node_height, node_hash, status, updated_at
-         FROM chain_state WHERE network_id = $1",
-    )
-    .bind(&state.network.id)
-    .fetch_one(&mut *transaction)
-    .await?;
+    let mut transaction = read_snapshot(&state).await?;
+    let chain = snapshot_chain_state(&mut transaction, &state.network.id).await?;
     let rows = sqlx::query_as::<_, RichListRow>(RICH_LIST_QUERY)
         .bind(&state.network.id)
         .bind(i64::from(limit))
         .fetch_all(&mut *transaction)
-        .await?;
-    let summary = sqlx::query_as::<_, RichListSummaryRow>(RICH_LIST_SUMMARY_QUERY)
-        .bind(&state.network.id)
-        .fetch_one(&mut *transaction)
         .await?;
     let pool = sqlx::query_as::<_, LatestPoolRow>(LATEST_TRANSPARENT_POOL_QUERY)
         .bind(&state.network.id)
@@ -227,40 +251,55 @@ async fn rich_list(
 
     let transparent_pool_zat = pool.as_ref().and_then(|row| row.chain_value_zat);
     let transparent_pool_monitored = pool.as_ref().and_then(|row| row.monitored);
+    let totals = rows
+        .first()
+        .map_or_else(RichListTotals::default, |row| RichListTotals {
+            funded_address_count: row.funded_address_count,
+            addressed_balance_zat: row.addressed_balance_zat,
+            top_1_zat: row.top_1_zat,
+            top_10_zat: row.top_10_zat,
+            top_100_zat: row.top_100_zat,
+        });
     let addresses = rows
         .into_iter()
-        .map(|row| RichListEntry {
-            rank: u64::try_from(row.rank).unwrap_or(0),
-            address: row.address,
-            balance: amount(row.balance_zat, &state.network),
-            total_received: amount(row.total_received_zat, &state.network),
-            total_sent: amount(row.total_sent_zat, &state.network),
-            transparent_pool_share_percent: transparent_pool_zat
-                .filter(|denominator| *denominator > 0)
-                .map(|denominator| exact_percent(row.balance_zat, denominator)),
-            utxo_count: row.utxo_count,
-            transaction_count: row.transaction_count,
-            first_seen_height: row
-                .first_seen_height
-                .and_then(|value| value.try_into().ok()),
-            last_seen_height: row.last_seen_height.and_then(|value| value.try_into().ok()),
-            last_seen_at: row.last_seen_at,
+        .map(|row| {
+            Ok(RichListEntry {
+                rank: u64::try_from(row.rank).unwrap_or(0),
+                address: row.address,
+                balance: amount(row.balance_zat, &state.network),
+                total_received: amount_from_zatoshi_text(&row.total_received_zat, &state.network)?,
+                total_sent: amount_from_zatoshi_text(&row.total_sent_zat, &state.network)?,
+                transparent_pool_share_percent: transparent_pool_zat
+                    .filter(|denominator| {
+                        transparent_pool_monitored == Some(true) && *denominator > 0
+                    })
+                    .map(|denominator| exact_percent(row.balance_zat, denominator)),
+                utxo_count: row.utxo_count,
+                transaction_count: row.transaction_count,
+                first_seen_height: row
+                    .first_seen_height
+                    .and_then(|value| value.try_into().ok()),
+                last_seen_height: row.last_seen_height.and_then(|value| value.try_into().ok()),
+                last_seen_at: row.last_seen_at,
+            })
         })
-        .collect();
-    let unassigned = transparent_pool_zat
-        .filter(|_| transparent_pool_monitored == Some(true))
-        .map(|value| value.saturating_sub(summary.addressed_balance_zat));
+        .collect::<Result<Vec<_>>>()?;
+    let unassigned = unassigned_transparent_balance(
+        transparent_pool_zat,
+        transparent_pool_monitored,
+        totals.addressed_balance_zat,
+    )?;
     let data = RichListView {
         as_of_height: optional_height(chain.indexed_height)?,
         as_of_hash: chain.indexed_hash.clone(),
         transparent_pool: transparent_pool_zat.map(|value| amount(value, &state.network)),
         transparent_pool_monitored,
-        funded_address_count: summary.funded_address_count,
-        addressed_balance: amount(summary.addressed_balance_zat, &state.network),
+        funded_address_count: totals.funded_address_count,
+        addressed_balance: amount(totals.addressed_balance_zat, &state.network),
         addressless_or_undecoded_balance: unassigned.map(|value| amount(value, &state.network)),
-        top_1_balance: amount(summary.top_1_zat, &state.network),
-        top_10_balance: amount(summary.top_10_zat, &state.network),
-        top_100_balance: amount(summary.top_100_zat, &state.network),
+        top_1_balance: amount(totals.top_1_zat, &state.network),
+        top_10_balance: amount(totals.top_10_zat, &state.network),
+        top_100_balance: amount(totals.top_100_zat, &state.network),
         addresses,
         scope_notice: "Transparent balances only. This is not a ranking of shielded Wcash holders; shielded identities and balances cannot be derived from public chain data.".to_owned(),
     };
@@ -271,26 +310,28 @@ async fn address_stats(
     State(state): State<Arc<AppState>>,
     Query(query): Query<HistoryQuery>,
 ) -> Result<Json<ApiEnvelope<AddressStatsView>>> {
-    let chain = chain_state(&state).await?;
     let limit = history_limit(query.limit);
     let before = query
         .before
         .map(|value| i64::try_from(value).map_err(|_| height_error()))
         .transpose()?;
+    let mut transaction = read_snapshot(&state).await?;
+    let chain = snapshot_chain_state(&mut transaction, &state.network.id).await?;
     let rows = sqlx::query_as::<_, AddressStatsRow>(ADDRESS_STATS_QUERY)
         .bind(&state.network.id)
         .bind(before)
         .bind(i64::from(limit))
-        .fetch_all(state.database.pool())
+        .fetch_all(&mut *transaction)
         .await?;
     let current = sqlx::query_as::<_, CurrentAddressStatsRow>(CURRENT_ADDRESS_STATS_QUERY)
         .bind(&state.network.id)
-        .fetch_one(state.database.pool())
+        .fetch_one(&mut *transaction)
         .await?;
     let pool = sqlx::query_as::<_, LatestPoolRow>(LATEST_TRANSPARENT_POOL_QUERY)
         .bind(&state.network.id)
-        .fetch_optional(state.database.pool())
+        .fetch_optional(&mut *transaction)
         .await?;
+    transaction.commit().await?;
     let transparent_pool_zat = pool.as_ref().and_then(|row| row.chain_value_zat);
     let transparent_pool_monitored = pool.as_ref().and_then(|row| row.monitored);
     let data = AddressStatsView {
@@ -301,9 +342,12 @@ async fn address_stats(
         addressed_balance: amount(current.addressed_balance_zat, &state.network),
         transparent_pool: transparent_pool_zat.map(|value| amount(value, &state.network)),
         transparent_pool_monitored,
-        addressless_or_undecoded_balance: transparent_pool_zat
-            .filter(|_| transparent_pool_monitored == Some(true))
-            .map(|value| amount(value.saturating_sub(current.addressed_balance_zat), &state.network)),
+        addressless_or_undecoded_balance: unassigned_transparent_balance(
+            transparent_pool_zat,
+            transparent_pool_monitored,
+            current.addressed_balance_zat,
+        )?
+        .map(|value| amount(value, &state.network)),
         points: rows
             .into_iter()
             .map(|row| {
@@ -365,6 +409,29 @@ fn exact_percent(numerator: i64, denominator: i64) -> String {
         .saturating_mul(100_000_000)
         / i128::from(denominator);
     format!("{}.{:08}", scaled / 100_000_000, scaled % 100_000_000)
+}
+
+fn unassigned_transparent_balance(
+    transparent_pool_zat: Option<i64>,
+    transparent_pool_monitored: Option<bool>,
+    addressed_balance_zat: i64,
+) -> Result<Option<i64>> {
+    match (transparent_pool_monitored, transparent_pool_zat) {
+        (Some(true), Some(transparent_pool_zat)) => transparent_pool_zat
+            .checked_sub(addressed_balance_zat)
+            .filter(|value| *value >= 0)
+            .map(Some)
+            .ok_or_else(|| {
+                ExplorerError::InvalidNodeResponse(
+                    "decoded transparent balances exceed the monitored transparent value pool"
+                        .to_owned(),
+                )
+            }),
+        (Some(true), None) => Err(ExplorerError::InvalidNodeResponse(
+            "the transparent value pool is marked monitored without an exact value".to_owned(),
+        )),
+        _ => Ok(None),
+    }
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -491,17 +558,22 @@ struct RichListRow {
     rank: i64,
     address: String,
     balance_zat: i64,
-    total_received_zat: i64,
-    total_sent_zat: i64,
+    total_received_zat: String,
+    total_sent_zat: String,
     utxo_count: i64,
     transaction_count: i64,
     first_seen_height: Option<i64>,
     last_seen_height: Option<i64>,
     last_seen_at: Option<DateTime<Utc>>,
+    funded_address_count: i64,
+    addressed_balance_zat: i64,
+    top_1_zat: i64,
+    top_10_zat: i64,
+    top_100_zat: i64,
 }
 
-#[derive(Clone, Debug, FromRow)]
-struct RichListSummaryRow {
+#[derive(Clone, Debug, Default)]
+struct RichListTotals {
     funded_address_count: i64,
     addressed_balance_zat: i64,
     top_1_zat: i64,
@@ -589,24 +661,39 @@ pub struct AddressStatsView {
     pub scope_notice: String,
 }
 
-const NETWORK_HISTORY_QUERY: &str = "WITH history AS (
+const NETWORK_HISTORY_QUERY: &str = "WITH selectors AS MATERIALIZED (
+        SELECT c.height, c.block_hash, c.witness_hash
+        FROM canonical_chain c
+        WHERE c.network_id = $1
+          AND ($2::BIGINT IS NULL OR c.height < $2)
+        ORDER BY c.height DESC
+        LIMIT ($3 + 1)
+    ), selected AS (
         SELECT c.height, c.block_hash AS hash, b.block_time,
                b.difficulty_text, b.size_bytes, b.transaction_count,
-               b.chain_supply_zat,
-               EXTRACT(EPOCH FROM (
-                   b.block_time - LAG(b.block_time) OVER (ORDER BY c.height)
-               ))::BIGINT AS spacing_seconds
-        FROM canonical_chain c
+               b.chain_supply_zat
+        FROM selectors c
         JOIN blocks b ON b.block_hash = c.block_hash
-        WHERE c.network_id = $1
+    ), history AS (
+        SELECT *,
+               EXTRACT(EPOCH FROM (
+                   block_time - LAG(block_time) OVER (ORDER BY height)
+               ))::BIGINT AS spacing_seconds
+        FROM selected
     ), recent AS (
         SELECT * FROM history
-        WHERE ($2::BIGINT IS NULL OR height < $2)
         ORDER BY height DESC LIMIT $3
     )
     SELECT * FROM recent ORDER BY height";
 
-const VALUE_POOL_HISTORY_QUERY: &str = "WITH history AS (
+const VALUE_POOL_HISTORY_QUERY: &str = "WITH selected AS MATERIALIZED (
+        SELECT c.height, c.block_hash, c.witness_hash
+        FROM canonical_chain c
+        WHERE c.network_id = $1
+          AND ($2::BIGINT IS NULL OR c.height < $2)
+        ORDER BY c.height DESC
+        LIMIT $3
+    ), history AS (
         SELECT c.height, c.block_hash AS hash, b.block_time, b.chain_supply_zat,
                MAX(p.chain_value_zat) FILTER (WHERE p.pool_id = 'transparent')::BIGINT
                    AS transparent_chain_value_zat,
@@ -620,19 +707,14 @@ const VALUE_POOL_HISTORY_QUERY: &str = "WITH history AS (
                    AS ironwood_value_delta_zat,
                BOOL_OR(p.monitored) FILTER (WHERE p.pool_id = 'ironwood')
                    AS ironwood_monitored
-        FROM canonical_chain c
+        FROM selected c
         JOIN blocks b ON b.block_hash = c.block_hash
         LEFT JOIN value_pool_snapshots p
           ON p.block_hash = c.block_hash AND p.witness_hash = c.witness_hash
          AND p.pool_id IN ('transparent', 'ironwood')
-        WHERE c.network_id = $1
         GROUP BY c.height, c.block_hash, b.block_time, b.chain_supply_zat
-    ), recent AS (
-        SELECT * FROM history
-        WHERE ($2::BIGINT IS NULL OR height < $2)
-        ORDER BY height DESC LIMIT $3
     )
-    SELECT * FROM recent ORDER BY height";
+    SELECT * FROM history ORDER BY height";
 
 const MERGE_MINING_STATS_QUERY: &str = "WITH evidence AS (
         SELECT c.height, w.exact_witness_state, w.local_validation_state,
@@ -716,12 +798,12 @@ const RICH_LIST_QUERY: &str = "WITH canonical_tx AS MATERIALIZED (
         JOIN transparent_inputs i ON i.transaction_instance_id = tx.transaction_instance_id
         WHERE i.previous_txid IS NOT NULL
     ), received AS (
-        SELECT o.address, SUM(o.value_zat)::BIGINT AS total_received_zat
+        SELECT o.address, SUM(o.value_zat::NUMERIC) AS total_received_zat
         FROM canonical_tx tx
         JOIN transparent_outputs o ON o.transaction_instance_id = tx.transaction_instance_id
         WHERE o.address IS NOT NULL GROUP BY o.address
     ), spent AS (
-        SELECT o.address, SUM(o.value_zat)::BIGINT AS total_sent_zat
+        SELECT o.address, SUM(o.value_zat::NUMERIC) AS total_sent_zat
         FROM canonical_tx tx
         JOIN transparent_outputs o ON o.transaction_instance_id = tx.transaction_instance_id
         JOIN spent_prevouts s ON s.previous_txid = tx.txid AND s.previous_output_index = o.output_index
@@ -734,12 +816,14 @@ const RICH_LIST_QUERY: &str = "WITH canonical_tx AS MATERIALIZED (
         WHERE o.address IS NOT NULL AND s.previous_txid IS NULL
         GROUP BY o.address HAVING SUM(o.value_zat) > 0
     ), activity_events AS (
-        SELECT o.address, tx.height, tx.block_time, tx.transaction_instance_id
+        SELECT o.address, tx.height, tx.block_time, tx.tx_position,
+               tx.transaction_instance_id
         FROM canonical_tx tx
         JOIN transparent_outputs o ON o.transaction_instance_id = tx.transaction_instance_id
         WHERE o.address IS NOT NULL
         UNION
         SELECT previous_output.address, spending_tx.height, spending_tx.block_time,
+               spending_tx.tx_position,
                spending_tx.transaction_instance_id
         FROM canonical_tx spending_tx
         JOIN transparent_inputs input ON input.transaction_instance_id = spending_tx.transaction_instance_id
@@ -751,11 +835,14 @@ const RICH_LIST_QUERY: &str = "WITH canonical_tx AS MATERIALIZED (
     ), activity AS (
         SELECT address, COUNT(*)::BIGINT AS transaction_count,
                MIN(height) AS first_seen_height, MAX(height) AS last_seen_height,
-               MAX(block_time) AS last_seen_at
+               (ARRAY_AGG(
+                   block_time
+                   ORDER BY height DESC, tx_position DESC, transaction_instance_id DESC
+               ))[1] AS last_seen_at
         FROM activity_events GROUP BY address
     ), balances AS (
         SELECT u.address, u.balance_zat, u.utxo_count, r.total_received_zat,
-               COALESCE(s.total_sent_zat, 0)::BIGINT AS total_sent_zat,
+               COALESCE(s.total_sent_zat, 0::NUMERIC) AS total_sent_zat,
                COALESCE(a.transaction_count, 0)::BIGINT AS transaction_count,
                a.first_seen_height, a.last_seen_height, a.last_seen_at
         FROM utxos u JOIN received r ON r.address = u.address
@@ -765,48 +852,27 @@ const RICH_LIST_QUERY: &str = "WITH canonical_tx AS MATERIALIZED (
         SELECT *, ROW_NUMBER() OVER (ORDER BY balance_zat DESC, address)::BIGINT AS rank
         FROM balances
     )
-    SELECT rank, address, balance_zat, total_received_zat, total_sent_zat,
-           utxo_count, transaction_count, first_seen_height, last_seen_height, last_seen_at
+    SELECT rank, address, balance_zat, total_received_zat::TEXT AS total_received_zat,
+           total_sent_zat::TEXT AS total_sent_zat,
+           utxo_count, transaction_count, first_seen_height, last_seen_height, last_seen_at,
+           COUNT(*) OVER ()::BIGINT AS funded_address_count,
+           COALESCE(SUM(balance_zat) OVER (), 0)::BIGINT AS addressed_balance_zat,
+           COALESCE(SUM(balance_zat) FILTER (WHERE rank <= 1) OVER (), 0)::BIGINT AS top_1_zat,
+           COALESCE(SUM(balance_zat) FILTER (WHERE rank <= 10) OVER (), 0)::BIGINT AS top_10_zat,
+           COALESCE(SUM(balance_zat) FILTER (WHERE rank <= 100) OVER (), 0)::BIGINT AS top_100_zat
     FROM ranked ORDER BY rank LIMIT $2";
 
-const RICH_LIST_SUMMARY_QUERY: &str = "WITH canonical_tx AS MATERIALIZED (
-        SELECT ti.transaction_instance_id, ti.txid
-        FROM canonical_chain c
-        JOIN block_transactions bt
-          ON bt.block_hash = c.block_hash AND bt.witness_hash = c.witness_hash
-        JOIN transaction_instances ti
-          ON ti.transaction_instance_id = bt.transaction_instance_id
-        WHERE c.network_id = $1
-    ), spent_prevouts AS MATERIALIZED (
-        SELECT DISTINCT i.previous_txid, i.previous_output_index
-        FROM canonical_tx tx
-        JOIN transparent_inputs i ON i.transaction_instance_id = tx.transaction_instance_id
-        WHERE i.previous_txid IS NOT NULL
-    ), balances AS (
-        SELECT o.address, SUM(o.value_zat)::BIGINT AS balance_zat
-        FROM canonical_tx tx
-        JOIN transparent_outputs o ON o.transaction_instance_id = tx.transaction_instance_id
-        LEFT JOIN spent_prevouts s
-          ON s.previous_txid = tx.txid AND s.previous_output_index = o.output_index
-        WHERE o.address IS NOT NULL AND s.previous_txid IS NULL
-        GROUP BY o.address HAVING SUM(o.value_zat) > 0
-    ), ranked AS (
-        SELECT balance_zat, ROW_NUMBER() OVER (ORDER BY balance_zat DESC, address) AS rank
-        FROM balances
-    )
-    SELECT COUNT(*)::BIGINT AS funded_address_count,
-           COALESCE(SUM(balance_zat), 0)::BIGINT AS addressed_balance_zat,
-           COALESCE(SUM(balance_zat) FILTER (WHERE rank <= 1), 0)::BIGINT AS top_1_zat,
-           COALESCE(SUM(balance_zat) FILTER (WHERE rank <= 10), 0)::BIGINT AS top_10_zat,
-           COALESCE(SUM(balance_zat) FILTER (WHERE rank <= 100), 0)::BIGINT AS top_100_zat
-    FROM ranked";
-
 const LATEST_TRANSPARENT_POOL_QUERY: &str = "SELECT p.chain_value_zat, p.monitored
-     FROM canonical_chain c
-     JOIN value_pool_snapshots p
-       ON p.block_hash = c.block_hash AND p.witness_hash = c.witness_hash
-     WHERE c.network_id = $1 AND p.pool_id = 'transparent'
-     ORDER BY c.height DESC LIMIT 1";
+     FROM chain_state s
+     LEFT JOIN canonical_chain c
+       ON c.network_id = s.network_id
+      AND c.height = s.indexed_height
+      AND c.block_hash = s.indexed_hash
+     LEFT JOIN value_pool_snapshots p
+       ON p.block_hash = c.block_hash
+      AND p.witness_hash = c.witness_hash
+      AND p.pool_id = 'transparent'
+     WHERE s.network_id = $1";
 
 const ADDRESS_STATS_QUERY: &str =
     "WITH canonical_tx AS MATERIALIZED (
@@ -902,5 +968,21 @@ mod tests {
         assert_eq!(history_limit(None), DEFAULT_HISTORY_LIMIT);
         assert_eq!(history_limit(Some(1)), 2);
         assert_eq!(history_limit(Some(u16::MAX)), MAX_HISTORY_LIMIT);
+    }
+
+    #[test]
+    fn unassigned_balance_requires_consistent_monitored_data() {
+        assert_eq!(
+            unassigned_transparent_balance(Some(100), Some(true), 75)
+                .expect("consistent pool data"),
+            Some(25)
+        );
+        assert_eq!(
+            unassigned_transparent_balance(Some(100), Some(false), 75)
+                .expect("unmonitored pool data is not used"),
+            None
+        );
+        assert!(unassigned_transparent_balance(None, Some(true), 75).is_err());
+        assert!(unassigned_transparent_balance(Some(50), Some(true), 75).is_err());
     }
 }
