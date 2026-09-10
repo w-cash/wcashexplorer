@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod analytics;
 pub mod api;
 pub mod auxpow;
 pub mod config;

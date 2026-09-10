@@ -4135,6 +4135,7 @@ dependencies = [
  "url",
  "uuid",
  "wcash-zcash-aux",
+ "zebra-chain",
 ]
 
 [[package]]

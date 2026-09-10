@@ -24,6 +24,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 use uuid::Uuid;
+use zebra_chain::{parameters::Network, transparent::Address as TransparentAddress};
 
 use crate::{
     config::NetworkConfig,
@@ -72,6 +73,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/reorgs", get(reorgs))
         .route("/api/v1/search", get(search))
         .route("/api/openapi.json", get(openapi))
+        .merge(crate::analytics::routes())
         .with_state(Arc::new(state))
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(ConcurrencyLimitLayer::new(256))
@@ -438,64 +440,78 @@ async fn address(
     State(state): State<Arc<AppState>>,
     Path(address): Path<String>,
 ) -> Result<Json<ApiEnvelope<AddressView>>> {
-    validate_address(&address)?;
-    let chain = chain_state(&state).await?;
+    let address = validate_address(&address, &state.network)?;
+    let mut transaction = state.database.pool().begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .execute(&mut *transaction)
+        .await?;
+    let chain = sqlx::query_as::<_, ChainStateRow>(
+        "SELECT indexed_height, indexed_hash, node_height, node_hash, status, updated_at
+         FROM chain_state WHERE network_id = $1",
+    )
+    .bind(&state.network.id)
+    .fetch_one(&mut *transaction)
+    .await?;
     let tip = chain.indexed_height.unwrap_or(0);
     let balances = sqlx::query_as::<_, AddressBalanceRow>(ADDRESS_BALANCE_QUERY)
         .bind(&state.network.id)
         .bind(&address)
         .bind(tip)
         .bind(i64::from(state.network.coinbase_maturity))
-        .fetch_one(state.database.pool())
+        .fetch_one(&mut *transaction)
         .await?;
-    if balances.total_received_zat == 0 && balances.utxo_count == 0 {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM transparent_outputs WHERE address = $1)",
-        )
-        .bind(&address)
-        .fetch_one(state.database.pool())
-        .await?;
-        if !exists {
-            return Err(ExplorerError::NotFound);
-        }
+    if !balances.address_exists {
+        return Err(ExplorerError::NotFound);
     }
-    let activity = sqlx::query_as::<_, AddressActivityRow>(
-        "SELECT c.height AS block_height, c.block_hash, b.block_time, ti.txid,
-                ti.auth_digest,
-                COALESCE(SUM(o.value_zat), 0)::BIGINT AS received_zat
-         FROM transparent_outputs o
-         JOIN transaction_instances ti ON ti.transaction_instance_id = o.transaction_instance_id
-         JOIN block_transactions bt ON bt.transaction_instance_id = ti.transaction_instance_id
-         JOIN canonical_chain c ON c.block_hash = bt.block_hash AND c.witness_hash = bt.witness_hash
-         JOIN blocks b ON b.block_hash = c.block_hash
-         WHERE c.network_id = $1 AND o.address = $2
-         GROUP BY c.height, c.block_hash, b.block_time, ti.txid, ti.auth_digest
-         ORDER BY c.height DESC LIMIT 100",
-    )
-    .bind(&state.network.id)
-    .bind(&address)
-    .fetch_all(state.database.pool())
-    .await?
-    .into_iter()
-    .map(|row| AddressActivity {
-        txid: row.txid,
-        auth_digest: row.auth_digest,
-        block_height: u64::try_from(row.block_height).unwrap_or(0),
-        block_hash: row.block_hash,
-        block_time: row.block_time,
-        received: amount(row.received_zat, &state.network),
-    })
-    .collect();
+    let activity = sqlx::query_as::<_, AddressActivityRow>(ADDRESS_ACTIVITY_QUERY)
+        .bind(&state.network.id)
+        .bind(&address)
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .map(|row| {
+            let direction = match (row.received_zat > 0, row.spent_zat > 0) {
+                (true, true) => "self",
+                (true, false) => "in",
+                (false, true) => "out",
+                (false, false) => "neutral",
+            };
+            AddressActivity {
+                txid: row.txid,
+                auth_digest: row.auth_digest,
+                block_height: u64::try_from(row.block_height).unwrap_or(0),
+                block_hash: row.block_hash,
+                block_time: row.block_time,
+                position: row.tx_position,
+                is_coinbase: row.is_coinbase,
+                direction: direction.to_owned(),
+                received: amount(row.received_zat, &state.network),
+                sent: amount(row.spent_zat, &state.network),
+                net: amount(row.net_zat, &state.network),
+                balance_after: amount(row.balance_after_zat, &state.network),
+            }
+        })
+        .collect::<Vec<_>>();
+    transaction.commit().await?;
     let data = AddressView {
         address,
         address_type: "transparent".to_owned(),
         total_received: amount(balances.total_received_zat, &state.network),
-        unspent: amount(balances.unspent_zat, &state.network),
+        total_sent: amount(balances.total_spent_zat, &state.network),
+        unspent: amount(balances.balance_zat, &state.network),
         immature_coinbase: amount(balances.immature_coinbase_zat, &state.network),
         mature_coinbase_must_shield: amount(balances.mature_coinbase_zat, &state.network),
+        non_coinbase_unspent: amount(balances.non_coinbase_unspent_zat, &state.network),
         utxo_count: balances.utxo_count,
         mined_output_count: balances.mined_output_count,
+        mined_transaction_count: balances.mined_transaction_count,
+        transaction_count: balances.transaction_count,
+        first_seen_height: optional_u64(balances.first_seen_height, "first seen height")?,
+        last_seen_height: optional_u64(balances.last_seen_height, "last seen height")?,
+        first_seen_at: balances.first_seen_at,
+        last_seen_at: balances.last_seen_at,
         coinbase_maturity: state.network.coinbase_maturity,
+        canonical_double_spend_anomalies: balances.canonical_double_spend_anomalies,
         activity,
         scope_notice:
             "This page shows transparent activity only; shielded balances are not visible."
@@ -561,14 +577,23 @@ async fn search(
             tx_exists.then(|| SearchResult::new("transaction", needle, format!("/tx/{needle}")))
         }
     } else {
-        validate_address(needle)?;
+        let address = validate_address(needle, &state.network)?;
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM transparent_outputs WHERE address = $1)",
+            "SELECT EXISTS(
+                SELECT 1
+                FROM canonical_chain c
+                JOIN block_transactions bt
+                  ON bt.block_hash = c.block_hash AND bt.witness_hash = c.witness_hash
+                JOIN transparent_outputs o
+                  ON o.transaction_instance_id = bt.transaction_instance_id
+                WHERE c.network_id = $1 AND o.address = $2
+            )",
         )
-        .bind(needle)
+        .bind(&state.network.id)
+        .bind(&address)
         .fetch_one(state.database.pool())
         .await?;
-        exists.then(|| SearchResult::new("address", needle, format!("/address/{needle}")))
+        exists.then(|| SearchResult::new("address", &address, format!("/address/{address}")))
     }
     .ok_or(ExplorerError::NotFound)?;
     let chain = chain_state(&state).await?;
@@ -598,6 +623,8 @@ fn openapi_document() -> Value {
             {"name": "Blocks", "description": "Canonical Wcash blocks and exact AuxPoW evidence"},
             {"name": "Transactions", "description": "Canonical transaction instances"},
             {"name": "Addresses", "description": "Public transparent-address activity only"},
+            {"name": "Analytics", "description": "Reorg-safe canonical history and public value-pool analytics"},
+            {"name": "Merge mining", "description": "Network-wide Wcash and Zcash AuxPoW evidence"},
             {"name": "Chain", "description": "Canonical-chain search and reorganization history"},
             {"name": "Documentation", "description": "Machine-readable API description"}
         ],
@@ -630,6 +657,46 @@ fn openapi_document() -> Value {
             },
             "/api/v1/stats": {
                 "get": status_operation("getStats")
+            },
+            "/api/v1/network/history": {
+                "get": {
+                    "tags": ["Analytics"],
+                    "summary": "Get canonical network history",
+                    "description": "Returns oldest-to-newest canonical points. Difficulty is preserved as exact node text; the explorer does not invent a hashrate estimate from it.",
+                    "operationId": "getNetworkHistory",
+                    "parameters": analytics_history_parameters(),
+                    "responses": {
+                        "200": success_response("Canonical block history for charts.", schema_ref("NetworkHistoryEnvelope")),
+                        "400": response_ref("BadRequest"),
+                        "500": response_ref("InternalError")
+                    }
+                }
+            },
+            "/api/v1/value-pools/history": {
+                "get": {
+                    "tags": ["Analytics"],
+                    "summary": "Get Wcash value-pool history",
+                    "description": "Returns transparent and Ironwood aggregate pool telemetry. An unmonitored pool is not interpreted as a verified zero balance.",
+                    "operationId": "getValuePoolHistory",
+                    "parameters": analytics_history_parameters(),
+                    "responses": {
+                        "200": success_response("Canonical public value-pool history.", schema_ref("ValuePoolHistoryEnvelope")),
+                        "400": response_ref("BadRequest"),
+                        "500": response_ref("InternalError")
+                    }
+                }
+            },
+            "/api/v1/merge-mining/stats": {
+                "get": {
+                    "tags": ["Merge mining"],
+                    "summary": "Get network-wide AuxPoW evidence totals",
+                    "description": "Counts every canonical non-genesis Wcash block and keeps local proof validation distinct from parent-chain observations.",
+                    "operationId": "getMergeMiningStats",
+                    "responses": {
+                        "200": success_response("Canonical AuxPoW evidence totals.", schema_ref("MergeMiningStatsEnvelope")),
+                        "500": response_ref("InternalError")
+                    }
+                }
             },
             "/api/v1/blocks": {
                 "get": {
@@ -727,9 +794,37 @@ fn openapi_document() -> Value {
                     "operationId": "getTransparentAddress",
                     "parameters": [parameter_ref("Address")],
                     "responses": {
-                        "200": success_response("Public transparent-address balances and recent receiving activity.", schema_ref("AddressEnvelope")),
+                        "200": success_response("Public transparent-address balances and bidirectional activity.", schema_ref("AddressEnvelope")),
                         "400": response_ref("BadRequest"),
                         "404": response_ref("NotFound"),
+                        "500": response_ref("InternalError")
+                    }
+                }
+            },
+            "/api/v1/addresses/stats": {
+                "get": {
+                    "tags": ["Analytics", "Addresses"],
+                    "summary": "Get transparent-address history",
+                    "description": "Counts decoded public transparent addresses only. Shielded holder counts are not observable.",
+                    "operationId": "getTransparentAddressStats",
+                    "parameters": analytics_history_parameters(),
+                    "responses": {
+                        "200": success_response("Canonical transparent-address history.", schema_ref("AddressStatsEnvelope")),
+                        "400": response_ref("BadRequest"),
+                        "500": response_ref("InternalError")
+                    }
+                }
+            },
+            "/api/v1/addresses/rich-list": {
+                "get": {
+                    "tags": ["Analytics", "Addresses"],
+                    "summary": "List funded transparent addresses",
+                    "description": "Ranks decoded transparent UTXO balances only. It is not a ranking of shielded holders or total Wcash ownership.",
+                    "operationId": "listTransparentBalances",
+                    "parameters": [parameter_ref("RichListLimit")],
+                    "responses": {
+                        "200": success_response("Canonical transparent balance ranking.", schema_ref("RichListEnvelope")),
+                        "400": response_ref("BadRequest"),
                         "500": response_ref("InternalError")
                     }
                 }
@@ -808,6 +903,21 @@ fn openapi_document() -> Value {
                     "name": "limit", "in": "query", "required": false,
                     "description": "Requested page size. The server defaults to 20 and clamps values to 1 through 100.",
                     "schema": {"type": "integer", "format": "int32", "minimum": 1, "maximum": 100, "default": 20}
+                },
+                "HistoryBefore": {
+                    "name": "before", "in": "query", "required": false,
+                    "description": "Return canonical history strictly before this block height.",
+                    "schema": {"type": "integer", "format": "int64", "minimum": 0}
+                },
+                "HistoryLimit": {
+                    "name": "limit", "in": "query", "required": false,
+                    "description": "Requested history points. The server defaults to 240 and clamps values to 2 through 2048.",
+                    "schema": {"type": "integer", "format": "int32", "minimum": 2, "maximum": 2048, "default": 240}
+                },
+                "RichListLimit": {
+                    "name": "limit", "in": "query", "required": false,
+                    "description": "Number of funded transparent addresses. The server defaults to 50 and clamps values to 1 through 100.",
+                    "schema": {"type": "integer", "format": "int32", "minimum": 1, "maximum": 100, "default": 50}
                 }
             },
             "responses": {
@@ -835,6 +945,13 @@ fn status_operation(operation_id: &str) -> Value {
 
 fn pagination_parameters() -> Vec<Value> {
     vec![parameter_ref("Cursor"), parameter_ref("Limit")]
+}
+
+fn analytics_history_parameters() -> Vec<Value> {
+    vec![
+        parameter_ref("HistoryBefore"),
+        parameter_ref("HistoryLimit"),
+    ]
 }
 
 fn parameter_ref(name: &str) -> Value {
@@ -1010,6 +1127,159 @@ fn openapi_schemas() -> Value {
     extend_schema_group(
         &mut schemas,
         json!({
+            "NetworkHistoryPoint": {
+                "type": "object", "additionalProperties": false,
+                "required": ["height", "hash", "time", "difficulty", "spacingSeconds", "sizeBytes", "transactionCount", "totalIssued"],
+                "properties": {
+                    "height": {"type": "integer", "format": "int64", "minimum": 0},
+                    "hash": {"$ref": "#/components/schemas/Hash"},
+                    "time": {"$ref": "#/components/schemas/DateTime"},
+                    "difficulty": {"type": "string"},
+                    "spacingSeconds": nullable(json!({"type": "integer", "format": "int64"})),
+                    "sizeBytes": {"type": "integer", "format": "int64", "minimum": 0},
+                    "transactionCount": {"type": "integer", "format": "int32", "minimum": 0},
+                    "totalIssued": nullable_ref("Amount")
+                }
+            },
+            "NetworkHistory": {
+                "type": "object", "additionalProperties": false,
+                "required": ["asOfHeight", "asOfHash", "targetSpacingSeconds", "points"],
+                "properties": {
+                    "asOfHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
+                    "asOfHash": nullable_ref("Hash"),
+                    "targetSpacingSeconds": {"type": "integer", "format": "int32", "minimum": 1},
+                    "points": {"type": "array", "items": {"$ref": "#/components/schemas/NetworkHistoryPoint"}}
+                }
+            },
+            "PoolSnapshot": {
+                "type": "object", "additionalProperties": false,
+                "required": ["id", "chainValue", "valueDelta", "monitored"],
+                "properties": {
+                    "id": {"type": "string", "enum": ["transparent", "ironwood"]},
+                    "chainValue": nullable_ref("Amount"),
+                    "valueDelta": nullable_ref("Amount"),
+                    "monitored": nullable(json!({"type": "boolean"}))
+                }
+            },
+            "ValuePoolHistoryPoint": {
+                "type": "object", "additionalProperties": false,
+                "required": ["height", "hash", "time", "totalIssued", "transparent", "ironwood"],
+                "properties": {
+                    "height": {"type": "integer", "format": "int64", "minimum": 0},
+                    "hash": {"$ref": "#/components/schemas/Hash"},
+                    "time": {"$ref": "#/components/schemas/DateTime"},
+                    "totalIssued": nullable_ref("Amount"),
+                    "transparent": {"$ref": "#/components/schemas/PoolSnapshot"},
+                    "ironwood": {"$ref": "#/components/schemas/PoolSnapshot"}
+                }
+            },
+            "ValuePoolHistory": {
+                "type": "object", "additionalProperties": false,
+                "required": ["asOfHeight", "asOfHash", "unexpectedPoolSamples", "scopeNotice", "points"],
+                "properties": {
+                    "asOfHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
+                    "asOfHash": nullable_ref("Hash"),
+                    "unexpectedPoolSamples": {"type": "integer", "format": "int64", "minimum": 0},
+                    "scopeNotice": {"type": "string"},
+                    "points": {"type": "array", "items": {"$ref": "#/components/schemas/ValuePoolHistoryPoint"}}
+                }
+            },
+            "MergeMiningStats": {
+                "type": "object", "additionalProperties": false,
+                "required": ["asOfHeight", "asOfHash", "eligibleChildBlocks", "auxpowBlocks", "locallyVerifiedBlocks", "parentTargetVerifiedBlocks", "canonicalParentBlocks", "orphanedParentBlocks", "notFoundParentBlocks", "unavailableParentBlocks", "disagreementParentBlocks", "parentQuorumAgreementBlocks", "bestChainWitnessBlocks", "fullyVerifiedBlocks", "anomalyBlocks", "observationSourceCount", "lastVerifiedAt", "scopeNotice"],
+                "properties": {
+                    "asOfHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
+                    "asOfHash": nullable_ref("Hash"),
+                    "eligibleChildBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "auxpowBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "locallyVerifiedBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "parentTargetVerifiedBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "canonicalParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "orphanedParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "notFoundParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "unavailableParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "disagreementParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "parentQuorumAgreementBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "bestChainWitnessBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "fullyVerifiedBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "anomalyBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "observationSourceCount": {"type": "integer", "format": "int64", "minimum": 0},
+                    "lastVerifiedAt": nullable_ref("DateTime"),
+                    "scopeNotice": {"type": "string"}
+                }
+            }
+        }),
+    );
+    extend_schema_group(
+        &mut schemas,
+        json!({
+            "RichListEntry": {
+                "type": "object", "additionalProperties": false,
+                "required": ["rank", "address", "balance", "totalReceived", "totalSent", "transparentPoolSharePercent", "utxoCount", "transactionCount", "firstSeenHeight", "lastSeenHeight", "lastSeenAt"],
+                "properties": {
+                    "rank": {"type": "integer", "format": "int64", "minimum": 1},
+                    "address": {"type": "string"},
+                    "balance": {"$ref": "#/components/schemas/Amount"},
+                    "totalReceived": {"$ref": "#/components/schemas/Amount"},
+                    "totalSent": {"$ref": "#/components/schemas/Amount"},
+                    "transparentPoolSharePercent": nullable(json!({"type": "string", "pattern": "^[0-9]+\\.[0-9]{8}$"})),
+                    "utxoCount": {"type": "integer", "format": "int64", "minimum": 0},
+                    "transactionCount": {"type": "integer", "format": "int64", "minimum": 0},
+                    "firstSeenHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
+                    "lastSeenHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
+                    "lastSeenAt": nullable_ref("DateTime")
+                }
+            },
+            "RichList": {
+                "type": "object", "additionalProperties": false,
+                "required": ["asOfHeight", "asOfHash", "transparentPool", "transparentPoolMonitored", "fundedAddressCount", "addressedBalance", "addresslessOrUndecodedBalance", "top1Balance", "top10Balance", "top100Balance", "addresses", "scopeNotice"],
+                "properties": {
+                    "asOfHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
+                    "asOfHash": nullable_ref("Hash"),
+                    "transparentPool": nullable_ref("Amount"),
+                    "transparentPoolMonitored": nullable(json!({"type": "boolean"})),
+                    "fundedAddressCount": {"type": "integer", "format": "int64", "minimum": 0},
+                    "addressedBalance": {"$ref": "#/components/schemas/Amount"},
+                    "addresslessOrUndecodedBalance": nullable_ref("Amount"),
+                    "top1Balance": {"$ref": "#/components/schemas/Amount"},
+                    "top10Balance": {"$ref": "#/components/schemas/Amount"},
+                    "top100Balance": {"$ref": "#/components/schemas/Amount"},
+                    "addresses": {"type": "array", "items": {"$ref": "#/components/schemas/RichListEntry"}},
+                    "scopeNotice": {"type": "string"}
+                }
+            },
+            "AddressStatsPoint": {
+                "type": "object", "additionalProperties": false,
+                "required": ["height", "time", "activeAddresses", "newAddresses", "totalSeenAddresses"],
+                "properties": {
+                    "height": {"type": "integer", "format": "int64", "minimum": 0},
+                    "time": {"$ref": "#/components/schemas/DateTime"},
+                    "activeAddresses": {"type": "integer", "format": "int64", "minimum": 0},
+                    "newAddresses": {"type": "integer", "format": "int64", "minimum": 0},
+                    "totalSeenAddresses": {"type": "integer", "format": "int64", "minimum": 0}
+                }
+            },
+            "AddressStats": {
+                "type": "object", "additionalProperties": false,
+                "required": ["asOfHeight", "asOfHash", "fundedAddressCount", "seenAddressCount", "addressedBalance", "transparentPool", "transparentPoolMonitored", "addresslessOrUndecodedBalance", "points", "scopeNotice"],
+                "properties": {
+                    "asOfHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
+                    "asOfHash": nullable_ref("Hash"),
+                    "fundedAddressCount": {"type": "integer", "format": "int64", "minimum": 0},
+                    "seenAddressCount": {"type": "integer", "format": "int64", "minimum": 0},
+                    "addressedBalance": {"$ref": "#/components/schemas/Amount"},
+                    "transparentPool": nullable_ref("Amount"),
+                    "transparentPoolMonitored": nullable(json!({"type": "boolean"})),
+                    "addresslessOrUndecodedBalance": nullable_ref("Amount"),
+                    "points": {"type": "array", "items": {"$ref": "#/components/schemas/AddressStatsPoint"}},
+                    "scopeNotice": {"type": "string"}
+                }
+            }
+        }),
+    );
+    extend_schema_group(
+        &mut schemas,
+        json!({
             "TransactionSummary": transaction_summary_schema(),
             "TransparentInput": {
                 "type": "object", "additionalProperties": false,
@@ -1131,29 +1401,44 @@ fn openapi_schemas() -> Value {
             },
             "AddressActivity": {
                 "type": "object", "additionalProperties": false,
-                "required": ["txid", "authDigest", "blockHeight", "blockHash", "blockTime", "received"],
+                "required": ["txid", "authDigest", "blockHeight", "blockHash", "blockTime", "position", "isCoinbase", "direction", "received", "sent", "net", "balanceAfter"],
                 "properties": {
                     "txid": {"$ref": "#/components/schemas/Hash"},
                     "authDigest": {"$ref": "#/components/schemas/Hash"},
                     "blockHeight": {"type": "integer", "format": "int64", "minimum": 0},
                     "blockHash": {"$ref": "#/components/schemas/Hash"},
                     "blockTime": {"$ref": "#/components/schemas/DateTime"},
-                    "received": {"$ref": "#/components/schemas/Amount"}
+                    "position": {"type": "integer", "format": "int32", "minimum": 0},
+                    "isCoinbase": {"type": "boolean"},
+                    "direction": {"type": "string", "enum": ["in", "out", "self", "neutral"]},
+                    "received": {"$ref": "#/components/schemas/Amount"},
+                    "sent": {"$ref": "#/components/schemas/Amount"},
+                    "net": {"$ref": "#/components/schemas/Amount"},
+                    "balanceAfter": {"$ref": "#/components/schemas/Amount"}
                 }
             },
             "Address": {
                 "type": "object", "additionalProperties": false,
-                "required": ["address", "addressType", "totalReceived", "unspent", "immatureCoinbase", "matureCoinbaseMustShield", "utxoCount", "minedOutputCount", "coinbaseMaturity", "activity", "scopeNotice"],
+                "required": ["address", "addressType", "totalReceived", "totalSent", "unspent", "immatureCoinbase", "matureCoinbaseMustShield", "nonCoinbaseUnspent", "utxoCount", "minedOutputCount", "minedTransactionCount", "transactionCount", "firstSeenHeight", "lastSeenHeight", "firstSeenAt", "lastSeenAt", "coinbaseMaturity", "canonicalDoubleSpendAnomalies", "activity", "scopeNotice"],
                 "properties": {
                     "address": {"type": "string"},
                     "addressType": {"type": "string", "const": "transparent"},
                     "totalReceived": {"$ref": "#/components/schemas/Amount"},
+                    "totalSent": {"$ref": "#/components/schemas/Amount"},
                     "unspent": {"$ref": "#/components/schemas/Amount"},
                     "immatureCoinbase": {"$ref": "#/components/schemas/Amount"},
                     "matureCoinbaseMustShield": {"$ref": "#/components/schemas/Amount"},
+                    "nonCoinbaseUnspent": {"$ref": "#/components/schemas/Amount"},
                     "utxoCount": {"type": "integer", "format": "int64", "minimum": 0},
                     "minedOutputCount": {"type": "integer", "format": "int64", "minimum": 0},
+                    "minedTransactionCount": {"type": "integer", "format": "int64", "minimum": 0},
+                    "transactionCount": {"type": "integer", "format": "int64", "minimum": 0},
+                    "firstSeenHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
+                    "lastSeenHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
+                    "firstSeenAt": nullable_ref("DateTime"),
+                    "lastSeenAt": nullable_ref("DateTime"),
                     "coinbaseMaturity": {"type": "integer", "format": "int32", "minimum": 0},
+                    "canonicalDoubleSpendAnomalies": {"type": "integer", "format": "int64", "minimum": 0},
                     "activity": {"type": "array", "items": {"$ref": "#/components/schemas/AddressActivity"}},
                     "scopeNotice": {"type": "string"}
                 }
@@ -1188,6 +1473,11 @@ fn openapi_schemas() -> Value {
             "TransactionListEnvelope": envelope_array_ref("TransactionSummary"),
             "TransactionDetailEnvelope": envelope_ref("TransactionDetail"),
             "AddressEnvelope": envelope_ref("Address"),
+            "NetworkHistoryEnvelope": envelope_ref("NetworkHistory"),
+            "ValuePoolHistoryEnvelope": envelope_ref("ValuePoolHistory"),
+            "MergeMiningStatsEnvelope": envelope_ref("MergeMiningStats"),
+            "RichListEnvelope": envelope_ref("RichList"),
+            "AddressStatsEnvelope": envelope_ref("AddressStats"),
             "ReorgListEnvelope": envelope_array_ref("Reorganization"),
             "SearchEnvelope": envelope_ref("SearchResult"),
             "OpenApiDocument": {
@@ -1364,7 +1654,7 @@ async fn transaction_rows_for_block(
         .collect()
 }
 
-async fn chain_state(state: &AppState) -> Result<ChainStateRow> {
+pub(crate) async fn chain_state(state: &AppState) -> Result<ChainStateRow> {
     sqlx::query_as::<_, ChainStateRow>(
         "SELECT indexed_height, indexed_hash, node_height, node_hash, status, updated_at
          FROM chain_state WHERE network_id = $1",
@@ -1375,7 +1665,7 @@ async fn chain_state(state: &AppState) -> Result<ChainStateRow> {
     .map_err(Into::into)
 }
 
-fn envelope<T: Serialize>(
+pub(crate) fn envelope<T: Serialize>(
     state: &AppState,
     data: T,
     next_cursor: Option<String>,
@@ -1397,7 +1687,7 @@ fn envelope<T: Serialize>(
     }
 }
 
-fn amount(zatoshi: i64, network: &NetworkConfig) -> AmountView {
+pub(crate) fn amount(zatoshi: i64, network: &NetworkConfig) -> AmountView {
     let divisor = 10_i128.pow(u32::from(network.decimals));
     let value = i128::from(zatoshi);
     let sign = if value < 0 { "-" } else { "" };
@@ -1480,17 +1770,26 @@ fn is_hash(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn validate_address(value: &str) -> Result<()> {
-    if !(20..=256).contains(&value.len())
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
-        return Err(ExplorerError::InvalidRequest(
-            "address has an invalid public encoding".to_owned(),
-        ));
-    }
-    Ok(())
+fn validate_address(value: &str, config: &NetworkConfig) -> Result<String> {
+    let network = match config.id.as_str() {
+        "testnet" => Network::new_wcash_testnet(),
+        "regtest" => Network::new_wcash_regtest(),
+        "mainnet" => Network::Mainnet,
+        id => {
+            return Err(ExplorerError::Config(format!(
+                "unsupported Wcash address network {id}"
+            )));
+        }
+    };
+    let address = TransparentAddress::parse_wcash(value, &network).map_err(|_| {
+        ExplorerError::InvalidRequest(format!(
+            "address is not a valid Wcash {} transparent address",
+            config.id
+        ))
+    })?;
+    address.encode_wcash(&network).map_err(|_| {
+        ExplorerError::InvalidRequest("address has an invalid Wcash encoding".to_owned())
+    })
 }
 
 fn to_u64(value: i64, label: &str) -> Result<u64> {
@@ -1524,13 +1823,13 @@ struct SearchQuery {
 }
 
 #[derive(Clone, Debug, FromRow)]
-struct ChainStateRow {
-    indexed_height: Option<i64>,
-    indexed_hash: Option<String>,
-    node_height: Option<i64>,
-    node_hash: Option<String>,
-    status: String,
-    updated_at: DateTime<Utc>,
+pub(crate) struct ChainStateRow {
+    pub(crate) indexed_height: Option<i64>,
+    pub(crate) indexed_hash: Option<String>,
+    pub(crate) node_height: Option<i64>,
+    pub(crate) node_hash: Option<String>,
+    pub(crate) status: String,
+    pub(crate) updated_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -1905,12 +2204,22 @@ pub struct RawBlockView {
 
 #[derive(Clone, Debug, FromRow)]
 struct AddressBalanceRow {
+    address_exists: bool,
     total_received_zat: i64,
-    unspent_zat: i64,
+    total_spent_zat: i64,
+    balance_zat: i64,
     immature_coinbase_zat: i64,
     mature_coinbase_zat: i64,
+    non_coinbase_unspent_zat: i64,
     utxo_count: i64,
     mined_output_count: i64,
+    mined_transaction_count: i64,
+    transaction_count: i64,
+    first_seen_height: Option<i64>,
+    last_seen_height: Option<i64>,
+    first_seen_at: Option<DateTime<Utc>>,
+    last_seen_at: Option<DateTime<Utc>>,
+    canonical_double_spend_anomalies: i64,
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -1920,7 +2229,12 @@ struct AddressActivityRow {
     block_time: DateTime<Utc>,
     txid: String,
     auth_digest: String,
+    tx_position: i32,
+    is_coinbase: bool,
     received_zat: i64,
+    spent_zat: i64,
+    net_zat: i64,
+    balance_after_zat: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1929,12 +2243,21 @@ pub struct AddressView {
     pub address: String,
     pub address_type: String,
     pub total_received: AmountView,
+    pub total_sent: AmountView,
     pub unspent: AmountView,
     pub immature_coinbase: AmountView,
     pub mature_coinbase_must_shield: AmountView,
+    pub non_coinbase_unspent: AmountView,
     pub utxo_count: i64,
     pub mined_output_count: i64,
+    pub mined_transaction_count: i64,
+    pub transaction_count: i64,
+    pub first_seen_height: Option<u64>,
+    pub last_seen_height: Option<u64>,
+    pub first_seen_at: Option<DateTime<Utc>>,
+    pub last_seen_at: Option<DateTime<Utc>>,
     pub coinbase_maturity: u32,
+    pub canonical_double_spend_anomalies: i64,
     pub activity: Vec<AddressActivity>,
     pub scope_notice: String,
 }
@@ -1947,7 +2270,13 @@ pub struct AddressActivity {
     pub block_height: u64,
     pub block_hash: String,
     pub block_time: DateTime<Utc>,
+    pub position: i32,
+    pub is_coinbase: bool,
+    pub direction: String,
     pub received: AmountView,
+    pub sent: AmountView,
+    pub net: AmountView,
+    pub balance_after: AmountView,
 }
 
 #[derive(Clone, Debug, Serialize, FromRow)]
@@ -2123,37 +2452,141 @@ const AUXPOW_QUERY: &str = "SELECT a.proof_version, a.proof_size, a.parent_block
      JOIN block_witnesses w ON w.block_hash = a.block_hash AND w.witness_hash = a.witness_hash
      WHERE a.block_hash = $1 AND a.witness_hash = $2";
 
-const ADDRESS_BALANCE_QUERY: &str =
-    "WITH owned AS (
-        SELECT o.value_zat, ti.txid, o.output_index, ti.is_coinbase, c.height,
-               NOT EXISTS (
-                   SELECT 1
-                   FROM transparent_inputs spending_input
-                   JOIN transaction_instances spending_tx ON spending_tx.transaction_instance_id = spending_input.transaction_instance_id
-                   JOIN block_transactions spending_bt ON spending_bt.transaction_instance_id = spending_tx.transaction_instance_id
-                   JOIN canonical_chain spending_c ON spending_c.block_hash = spending_bt.block_hash AND spending_c.witness_hash = spending_bt.witness_hash
-                   WHERE spending_c.network_id = $1
-                     AND spending_input.previous_txid = ti.txid
-                     AND spending_input.previous_output_index = o.output_index
-               ) AS unspent
-        FROM transparent_outputs o
-        JOIN transaction_instances ti ON ti.transaction_instance_id = o.transaction_instance_id
-        JOIN block_transactions bt ON bt.transaction_instance_id = ti.transaction_instance_id
-        JOIN canonical_chain c ON c.block_hash = bt.block_hash AND c.witness_hash = bt.witness_hash
-        WHERE c.network_id = $1 AND o.address = $2
+const ADDRESS_BALANCE_QUERY: &str = "WITH canonical_tx AS MATERIALIZED (
+        SELECT c.height, c.block_hash, c.witness_hash, b.block_time,
+               bt.tx_position, ti.transaction_instance_id, ti.txid,
+               ti.auth_digest, ti.is_coinbase
+        FROM canonical_chain c
+        JOIN blocks b ON b.block_hash = c.block_hash
+        JOIN block_transactions bt
+          ON bt.block_hash = c.block_hash AND bt.witness_hash = c.witness_hash
+        JOIN transaction_instances ti
+          ON ti.transaction_instance_id = bt.transaction_instance_id
+        WHERE c.network_id = $1
+    ), canonical_spends AS MATERIALIZED (
+        SELECT i.previous_txid, i.previous_output_index,
+               COUNT(*)::BIGINT AS spend_count
+        FROM canonical_tx spending_tx
+        JOIN transparent_inputs i
+          ON i.transaction_instance_id = spending_tx.transaction_instance_id
+        WHERE i.previous_txid IS NOT NULL
+        GROUP BY i.previous_txid, i.previous_output_index
+    ), owned AS MATERIALIZED (
+        SELECT receiving_tx.height, receiving_tx.block_hash,
+               receiving_tx.witness_hash, receiving_tx.block_time,
+               receiving_tx.tx_position, receiving_tx.txid,
+               receiving_tx.auth_digest, receiving_tx.is_coinbase,
+               o.output_index, o.value_zat,
+               COALESCE(s.spend_count, 0) AS spend_count
+        FROM canonical_tx receiving_tx
+        JOIN transparent_outputs o
+          ON o.transaction_instance_id = receiving_tx.transaction_instance_id
+        LEFT JOIN canonical_spends s
+          ON s.previous_txid = receiving_tx.txid
+         AND s.previous_output_index = o.output_index
+        WHERE o.address = $2
+    ), event_keys AS (
+        SELECT block_hash, witness_hash, tx_position, height, block_time
+        FROM owned
+        UNION
+        SELECT spending_tx.block_hash, spending_tx.witness_hash,
+               spending_tx.tx_position, spending_tx.height,
+               spending_tx.block_time
+        FROM canonical_tx spending_tx
+        JOIN transparent_inputs i
+          ON i.transaction_instance_id = spending_tx.transaction_instance_id
+        JOIN owned o
+          ON o.txid = i.previous_txid AND o.output_index = i.previous_output_index
     )
     SELECT
+        (COUNT(o.*) > 0) AS address_exists,
         COALESCE(SUM(value_zat), 0)::BIGINT AS total_received_zat,
-        COALESCE(SUM(value_zat) FILTER (WHERE unspent), 0)::BIGINT AS unspent_zat,
+        COALESCE(SUM(value_zat) FILTER (WHERE spend_count > 0), 0)::BIGINT AS total_spent_zat,
+        COALESCE(SUM(value_zat) FILTER (WHERE spend_count = 0), 0)::BIGINT AS balance_zat,
         COALESCE(SUM(value_zat) FILTER (
-            WHERE unspent AND is_coinbase AND ($3 - height + 1) < $4
+            WHERE spend_count = 0 AND is_coinbase AND ($3 - height + 1) < $4
         ), 0)::BIGINT AS immature_coinbase_zat,
         COALESCE(SUM(value_zat) FILTER (
-            WHERE unspent AND is_coinbase AND ($3 - height + 1) >= $4
+            WHERE spend_count = 0 AND is_coinbase AND ($3 - height + 1) >= $4
         ), 0)::BIGINT AS mature_coinbase_zat,
-        COALESCE(COUNT(*) FILTER (WHERE unspent), 0)::BIGINT AS utxo_count,
-        COALESCE(COUNT(*) FILTER (WHERE is_coinbase), 0)::BIGINT AS mined_output_count
-    FROM owned";
+        COALESCE(SUM(value_zat) FILTER (
+            WHERE spend_count = 0 AND NOT is_coinbase
+        ), 0)::BIGINT AS non_coinbase_unspent_zat,
+        COUNT(o.*) FILTER (WHERE spend_count = 0)::BIGINT AS utxo_count,
+        COUNT(o.*) FILTER (WHERE is_coinbase)::BIGINT AS mined_output_count,
+        COUNT(DISTINCT (block_hash, witness_hash, tx_position))
+            FILTER (WHERE is_coinbase)::BIGINT AS mined_transaction_count,
+        (SELECT COUNT(*)::BIGINT FROM event_keys) AS transaction_count,
+        (SELECT MIN(height) FROM event_keys) AS first_seen_height,
+        (SELECT MAX(height) FROM event_keys) AS last_seen_height,
+        (SELECT MIN(block_time) FROM event_keys) AS first_seen_at,
+        (SELECT MAX(block_time) FROM event_keys) AS last_seen_at,
+        COALESCE(SUM(GREATEST(spend_count - 1, 0)), 0)::BIGINT
+            AS canonical_double_spend_anomalies
+    FROM owned o";
+
+const ADDRESS_ACTIVITY_QUERY: &str = "WITH canonical_tx AS MATERIALIZED (
+        SELECT c.height, c.block_hash, c.witness_hash, b.block_time,
+               bt.tx_position, ti.transaction_instance_id, ti.txid,
+               ti.auth_digest, ti.is_coinbase
+        FROM canonical_chain c
+        JOIN blocks b ON b.block_hash = c.block_hash
+        JOIN block_transactions bt
+          ON bt.block_hash = c.block_hash AND bt.witness_hash = c.witness_hash
+        JOIN transaction_instances ti
+          ON ti.transaction_instance_id = bt.transaction_instance_id
+        WHERE c.network_id = $1
+    ), deltas AS (
+        SELECT tx.height, tx.block_hash, tx.witness_hash, tx.block_time,
+               tx.tx_position, tx.txid, tx.auth_digest, tx.is_coinbase,
+               SUM(o.value_zat)::BIGINT AS received_zat, 0::BIGINT AS spent_zat
+        FROM canonical_tx tx
+        JOIN transparent_outputs o
+          ON o.transaction_instance_id = tx.transaction_instance_id
+        WHERE o.address = $2
+        GROUP BY tx.height, tx.block_hash, tx.witness_hash, tx.block_time,
+                 tx.tx_position, tx.txid, tx.auth_digest, tx.is_coinbase
+        UNION ALL
+        SELECT spending_tx.height, spending_tx.block_hash,
+               spending_tx.witness_hash, spending_tx.block_time,
+               spending_tx.tx_position, spending_tx.txid,
+               spending_tx.auth_digest, spending_tx.is_coinbase,
+               0::BIGINT, SUM(previous_output.value_zat)::BIGINT
+        FROM canonical_tx spending_tx
+        JOIN transparent_inputs input
+          ON input.transaction_instance_id = spending_tx.transaction_instance_id
+        JOIN canonical_tx previous_tx ON previous_tx.txid = input.previous_txid
+        JOIN transparent_outputs previous_output
+          ON previous_output.transaction_instance_id = previous_tx.transaction_instance_id
+         AND previous_output.output_index = input.previous_output_index
+        WHERE previous_output.address = $2
+        GROUP BY spending_tx.height, spending_tx.block_hash,
+                 spending_tx.witness_hash, spending_tx.block_time,
+                 spending_tx.tx_position, spending_tx.txid,
+                 spending_tx.auth_digest, spending_tx.is_coinbase
+    ), activity AS (
+        SELECT height, block_hash, witness_hash, block_time, tx_position,
+               txid, auth_digest, BOOL_OR(is_coinbase) AS is_coinbase,
+               SUM(received_zat)::BIGINT AS received_zat,
+               SUM(spent_zat)::BIGINT AS spent_zat
+        FROM deltas
+        GROUP BY height, block_hash, witness_hash, block_time,
+                 tx_position, txid, auth_digest
+    ), running AS (
+        SELECT *, (received_zat - spent_zat)::BIGINT AS net_zat,
+               SUM(received_zat - spent_zat) OVER (
+                   ORDER BY height, tx_position, txid, auth_digest
+               )::BIGINT AS balance_after_zat
+        FROM activity
+    )
+    SELECT block_height.height AS block_height, block_height.block_hash,
+           block_height.block_time, block_height.txid, block_height.auth_digest,
+           block_height.tx_position, block_height.is_coinbase,
+           block_height.received_zat, block_height.spent_zat,
+           block_height.net_zat, block_height.balance_after_zat
+    FROM running block_height
+    ORDER BY block_height.height DESC, block_height.tx_position DESC
+    LIMIT 100";
 
 #[cfg(test)]
 mod tests {
@@ -2204,6 +2637,33 @@ mod tests {
     }
 
     #[test]
+    fn wcash_address_validation_rejects_parent_and_wrong_network_encodings() {
+        let network = network();
+        let testnet_p2pkh = "WT6kWkxJzyp4LdwrjtvvuVFRbkMhH2SsBeq";
+        let testnet_p2sh = "WUJmKiHCs7MSy6FGzyBvrwdExdsU75uiFgz";
+        assert_eq!(
+            validate_address(testnet_p2pkh, &network).expect("valid Wcash testnet P2PKH"),
+            testnet_p2pkh
+        );
+        assert_eq!(
+            validate_address(testnet_p2sh, &network).expect("valid Wcash testnet P2SH"),
+            testnet_p2sh
+        );
+        assert!(
+            validate_address("tmQvJu83NwioWyV852dPCzNXhzdtXVJwMAJ", &network).is_err(),
+            "a Zcash Testnet parent address must not resolve as Wcash"
+        );
+        assert!(
+            validate_address("WR64VqQpZRujxYnAJmqGK4d4fbqQZRZHazG", &network).is_err(),
+            "a Wcash regtest address must not resolve on Wcash Testnet"
+        );
+        assert!(
+            validate_address("WT6kWkxJzyp4LdwrjtvvuVFRbkMhH2SsBex", &network).is_err(),
+            "a checksum mutation must be rejected"
+        );
+    }
+
+    #[test]
     fn openapi_document_covers_public_routes_and_resolves_local_references() {
         fn check_references(root: &Value, value: &Value) {
             match value {
@@ -2237,6 +2697,9 @@ mod tests {
             "/health/ready",
             "/api/v1/status",
             "/api/v1/stats",
+            "/api/v1/network/history",
+            "/api/v1/value-pools/history",
+            "/api/v1/merge-mining/stats",
             "/api/v1/blocks",
             "/api/v1/blocks/{id}",
             "/api/v1/blocks/{id}/raw",
@@ -2244,6 +2707,8 @@ mod tests {
             "/api/v1/transactions",
             "/api/v1/transactions/{txid}",
             "/api/v1/addresses/{address}",
+            "/api/v1/addresses/stats",
+            "/api/v1/addresses/rich-list",
             "/api/v1/reorgs",
             "/api/v1/search",
             "/api/openapi.json",
