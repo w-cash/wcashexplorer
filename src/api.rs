@@ -13,7 +13,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::FromRow;
+use sqlx::{FromRow, Postgres, Transaction};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
     catch_panic::CatchPanicLayer,
@@ -69,7 +69,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/blocks/{id}/auxpow", get(block_auxpow))
         .route("/api/v1/transactions", get(transactions))
         .route("/api/v1/transactions/{txid}", get(transaction))
-        .route("/api/v1/addresses/{address}", get(address))
         .route("/api/v1/reorgs", get(reorgs))
         .route("/api/v1/search", get(search))
         .route("/api/openapi.json", get(openapi))
@@ -436,22 +435,13 @@ async fn transaction(
     Ok(Json(envelope(&state, data, None, &chain)))
 }
 
-async fn address(
+pub(crate) async fn address(
     State(state): State<Arc<AppState>>,
     Path(address): Path<String>,
 ) -> Result<Json<ApiEnvelope<AddressView>>> {
     let address = validate_address(&address, &state.network)?;
-    let mut transaction = state.database.pool().begin().await?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *transaction)
-        .await?;
-    let chain = sqlx::query_as::<_, ChainStateRow>(
-        "SELECT indexed_height, indexed_hash, node_height, node_hash, status, updated_at
-         FROM chain_state WHERE network_id = $1",
-    )
-    .bind(&state.network.id)
-    .fetch_one(&mut *transaction)
-    .await?;
+    let mut transaction = read_snapshot(&state).await?;
+    let chain = snapshot_chain_state(&mut transaction, &state.network.id).await?;
     let tip = chain.indexed_height.unwrap_or(0);
     let balances = sqlx::query_as::<_, AddressBalanceRow>(ADDRESS_BALANCE_QUERY)
         .bind(&state.network.id)
@@ -496,8 +486,8 @@ async fn address(
     let data = AddressView {
         address,
         address_type: "transparent".to_owned(),
-        total_received: amount(balances.total_received_zat, &state.network),
-        total_sent: amount(balances.total_spent_zat, &state.network),
+        total_received: amount_from_zatoshi_text(&balances.total_received_zat, &state.network)?,
+        total_sent: amount_from_zatoshi_text(&balances.total_spent_zat, &state.network)?,
         unspent: amount(balances.balance_zat, &state.network),
         immature_coinbase: amount(balances.immature_coinbase_zat, &state.network),
         mature_coinbase_must_shield: amount(balances.mature_coinbase_zat, &state.network),
@@ -544,22 +534,27 @@ async fn search(
             "search query must contain between 1 and 256 characters".to_owned(),
         ));
     }
+    let mut transaction = read_snapshot(&state).await?;
+    let chain = snapshot_chain_state(&mut transaction, &state.network.id).await?;
     let result = if let Ok(height) = needle.parse::<u64>() {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM canonical_chain WHERE network_id = $1 AND height = $2)",
         )
         .bind(&state.network.id)
         .bind(to_i64(height, "height")?)
-        .fetch_one(state.database.pool())
+        .fetch_one(&mut *transaction)
         .await?;
         exists.then(|| SearchResult::new("block", needle, format!("/block/{needle}")))
     } else if is_hash(needle) {
         let block_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM blocks WHERE network_id = $1 AND block_hash = $2)",
+            "SELECT EXISTS(
+                SELECT 1 FROM canonical_chain
+                WHERE network_id = $1 AND block_hash = $2
+            )",
         )
         .bind(&state.network.id)
         .bind(needle)
-        .fetch_one(state.database.pool())
+        .fetch_one(&mut *transaction)
         .await?;
         if block_exists {
             Some(SearchResult::new(
@@ -569,10 +564,19 @@ async fn search(
             ))
         } else {
             let tx_exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM transaction_instances WHERE txid = $1)",
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM canonical_chain c
+                    JOIN block_transactions bt
+                      ON bt.block_hash = c.block_hash AND bt.witness_hash = c.witness_hash
+                    JOIN transaction_instances ti
+                      ON ti.transaction_instance_id = bt.transaction_instance_id
+                    WHERE c.network_id = $1 AND ti.txid = $2
+                )",
             )
+            .bind(&state.network.id)
             .bind(needle)
-            .fetch_one(state.database.pool())
+            .fetch_one(&mut *transaction)
             .await?;
             tx_exists.then(|| SearchResult::new("transaction", needle, format!("/tx/{needle}")))
         }
@@ -591,12 +595,12 @@ async fn search(
         )
         .bind(&state.network.id)
         .bind(&address)
-        .fetch_one(state.database.pool())
+        .fetch_one(&mut *transaction)
         .await?;
         exists.then(|| SearchResult::new("address", &address, format!("/address/{address}")))
     }
     .ok_or(ExplorerError::NotFound)?;
-    let chain = chain_state(&state).await?;
+    transaction.commit().await?;
     Ok(Json(envelope(&state, result, None, &chain)))
 }
 
@@ -1665,6 +1669,33 @@ pub(crate) async fn chain_state(state: &AppState) -> Result<ChainStateRow> {
     .map_err(Into::into)
 }
 
+pub(crate) async fn read_snapshot(state: &AppState) -> Result<Transaction<'_, Postgres>> {
+    let mut transaction = state.database.pool().begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("SET LOCAL statement_timeout = '5s'")
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("SET LOCAL lock_timeout = '250ms'")
+        .execute(&mut *transaction)
+        .await?;
+    Ok(transaction)
+}
+
+pub(crate) async fn snapshot_chain_state(
+    transaction: &mut Transaction<'_, Postgres>,
+    network_id: &str,
+) -> Result<ChainStateRow> {
+    Ok(sqlx::query_as(
+        "SELECT indexed_height, indexed_hash, node_height, node_hash, status, updated_at
+         FROM chain_state WHERE network_id = $1",
+    )
+    .bind(network_id)
+    .fetch_one(&mut **transaction)
+    .await?)
+}
+
 pub(crate) fn envelope<T: Serialize>(
     state: &AppState,
     data: T,
@@ -1702,6 +1733,42 @@ pub(crate) fn amount(zatoshi: i64, network: &NetworkConfig) -> AmountView {
         ),
         symbol: network.symbol.clone(),
     }
+}
+
+pub(crate) fn amount_from_zatoshi_text(
+    zatoshi: &str,
+    network: &NetworkConfig,
+) -> Result<AmountView> {
+    let (negative, digits) = zatoshi
+        .strip_prefix('-')
+        .map_or((false, zatoshi), |digits| (true, digits));
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(ExplorerError::InvalidNodeResponse(
+            "database returned an invalid exact amount".to_owned(),
+        ));
+    }
+    let digits = digits.trim_start_matches('0');
+    let digits = if digits.is_empty() { "0" } else { digits };
+    let decimals = usize::from(network.decimals);
+    let (whole, fractional) = if decimals == 0 {
+        (digits.to_owned(), String::new())
+    } else if digits.len() <= decimals {
+        ("0".to_owned(), format!("{digits:0>decimals$}"))
+    } else {
+        let split = digits.len() - decimals;
+        (digits[..split].to_owned(), digits[split..].to_owned())
+    };
+    let sign = if negative && digits != "0" { "-" } else { "" };
+    let decimal = if decimals == 0 {
+        format!("{sign}{whole}")
+    } else {
+        format!("{sign}{whole}.{fractional}")
+    };
+    Ok(AmountView {
+        zatoshi: format!("{sign}{digits}"),
+        decimal,
+        symbol: network.symbol.clone(),
+    })
 }
 
 fn next_halving_height(height: u64, network: &NetworkConfig) -> u64 {
@@ -2205,8 +2272,8 @@ pub struct RawBlockView {
 #[derive(Clone, Debug, FromRow)]
 struct AddressBalanceRow {
     address_exists: bool,
-    total_received_zat: i64,
-    total_spent_zat: i64,
+    total_received_zat: String,
+    total_spent_zat: String,
     balance_zat: i64,
     immature_coinbase_zat: i64,
     mature_coinbase_zat: i64,
@@ -2452,56 +2519,70 @@ const AUXPOW_QUERY: &str = "SELECT a.proof_version, a.proof_size, a.parent_block
      JOIN block_witnesses w ON w.block_hash = a.block_hash AND w.witness_hash = a.witness_hash
      WHERE a.block_hash = $1 AND a.witness_hash = $2";
 
-const ADDRESS_BALANCE_QUERY: &str = "WITH canonical_tx AS MATERIALIZED (
+const ADDRESS_BALANCE_QUERY: &str = "WITH owned_outputs AS MATERIALIZED (
         SELECT c.height, c.block_hash, c.witness_hash, b.block_time,
-               bt.tx_position, ti.transaction_instance_id, ti.txid,
-               ti.auth_digest, ti.is_coinbase
-        FROM canonical_chain c
-        JOIN blocks b ON b.block_hash = c.block_hash
-        JOIN block_transactions bt
-          ON bt.block_hash = c.block_hash AND bt.witness_hash = c.witness_hash
+               bt.tx_position, ti.txid, ti.auth_digest, ti.is_coinbase,
+               o.output_index, o.value_zat
+        FROM transparent_outputs o
         JOIN transaction_instances ti
-          ON ti.transaction_instance_id = bt.transaction_instance_id
-        WHERE c.network_id = $1
+          ON ti.transaction_instance_id = o.transaction_instance_id
+        JOIN block_transactions bt
+          ON bt.transaction_instance_id = ti.transaction_instance_id
+        JOIN canonical_chain c
+          ON c.block_hash = bt.block_hash AND c.witness_hash = bt.witness_hash
+        JOIN blocks b ON b.block_hash = c.block_hash
+        WHERE c.network_id = $1 AND o.address = $2
     ), canonical_spends AS MATERIALIZED (
-        SELECT i.previous_txid, i.previous_output_index,
+        SELECT owned.txid AS previous_txid,
+               owned.output_index AS previous_output_index,
                COUNT(*)::BIGINT AS spend_count
-        FROM canonical_tx spending_tx
+        FROM owned_outputs owned
         JOIN transparent_inputs i
-          ON i.transaction_instance_id = spending_tx.transaction_instance_id
-        WHERE i.previous_txid IS NOT NULL
-        GROUP BY i.previous_txid, i.previous_output_index
+          ON i.previous_txid = owned.txid
+         AND i.previous_output_index = owned.output_index
+        JOIN block_transactions spending_bt
+          ON spending_bt.transaction_instance_id = i.transaction_instance_id
+        JOIN canonical_chain spending_chain
+          ON spending_chain.block_hash = spending_bt.block_hash
+         AND spending_chain.witness_hash = spending_bt.witness_hash
+         AND spending_chain.network_id = $1
+        GROUP BY owned.txid, owned.output_index
     ), owned AS MATERIALIZED (
-        SELECT receiving_tx.height, receiving_tx.block_hash,
-               receiving_tx.witness_hash, receiving_tx.block_time,
-               receiving_tx.tx_position, receiving_tx.txid,
-               receiving_tx.auth_digest, receiving_tx.is_coinbase,
-               o.output_index, o.value_zat,
+        SELECT receiving.height, receiving.block_hash,
+               receiving.witness_hash, receiving.block_time,
+               receiving.tx_position, receiving.txid,
+               receiving.auth_digest, receiving.is_coinbase,
+               receiving.output_index, receiving.value_zat,
                COALESCE(s.spend_count, 0) AS spend_count
-        FROM canonical_tx receiving_tx
-        JOIN transparent_outputs o
-          ON o.transaction_instance_id = receiving_tx.transaction_instance_id
+        FROM owned_outputs receiving
         LEFT JOIN canonical_spends s
-          ON s.previous_txid = receiving_tx.txid
-         AND s.previous_output_index = o.output_index
-        WHERE o.address = $2
+          ON s.previous_txid = receiving.txid
+         AND s.previous_output_index = receiving.output_index
     ), event_keys AS (
         SELECT block_hash, witness_hash, tx_position, height, block_time
         FROM owned
         UNION
-        SELECT spending_tx.block_hash, spending_tx.witness_hash,
-               spending_tx.tx_position, spending_tx.height,
-               spending_tx.block_time
-        FROM canonical_tx spending_tx
+        SELECT spending_chain.block_hash, spending_chain.witness_hash,
+               spending_bt.tx_position, spending_chain.height,
+               spending_block.block_time
+        FROM owned_outputs receiving
         JOIN transparent_inputs i
-          ON i.transaction_instance_id = spending_tx.transaction_instance_id
-        JOIN owned o
-          ON o.txid = i.previous_txid AND o.output_index = i.previous_output_index
+          ON i.previous_txid = receiving.txid
+         AND i.previous_output_index = receiving.output_index
+        JOIN block_transactions spending_bt
+          ON spending_bt.transaction_instance_id = i.transaction_instance_id
+        JOIN canonical_chain spending_chain
+          ON spending_chain.block_hash = spending_bt.block_hash
+         AND spending_chain.witness_hash = spending_bt.witness_hash
+         AND spending_chain.network_id = $1
+        JOIN blocks spending_block
+          ON spending_block.block_hash = spending_chain.block_hash
     )
     SELECT
         (COUNT(o.*) > 0) AS address_exists,
-        COALESCE(SUM(value_zat), 0)::BIGINT AS total_received_zat,
-        COALESCE(SUM(value_zat) FILTER (WHERE spend_count > 0), 0)::BIGINT AS total_spent_zat,
+        COALESCE(SUM(value_zat::NUMERIC), 0)::TEXT AS total_received_zat,
+        COALESCE(SUM(value_zat::NUMERIC) FILTER (WHERE spend_count > 0), 0)::TEXT
+            AS total_spent_zat,
         COALESCE(SUM(value_zat) FILTER (WHERE spend_count = 0), 0)::BIGINT AS balance_zat,
         COALESCE(SUM(value_zat) FILTER (
             WHERE spend_count = 0 AND is_coinbase AND ($3 - height + 1) < $4
@@ -2517,52 +2598,64 @@ const ADDRESS_BALANCE_QUERY: &str = "WITH canonical_tx AS MATERIALIZED (
         COUNT(DISTINCT (block_hash, witness_hash, tx_position))
             FILTER (WHERE is_coinbase)::BIGINT AS mined_transaction_count,
         (SELECT COUNT(*)::BIGINT FROM event_keys) AS transaction_count,
-        (SELECT MIN(height) FROM event_keys) AS first_seen_height,
-        (SELECT MAX(height) FROM event_keys) AS last_seen_height,
-        (SELECT MIN(block_time) FROM event_keys) AS first_seen_at,
-        (SELECT MAX(block_time) FROM event_keys) AS last_seen_at,
+        (SELECT height FROM event_keys
+         ORDER BY height, tx_position, block_hash LIMIT 1) AS first_seen_height,
+        (SELECT height FROM event_keys
+         ORDER BY height DESC, tx_position DESC, block_hash DESC LIMIT 1) AS last_seen_height,
+        (SELECT block_time FROM event_keys
+         ORDER BY height, tx_position, block_hash LIMIT 1) AS first_seen_at,
+        (SELECT block_time FROM event_keys
+         ORDER BY height DESC, tx_position DESC, block_hash DESC LIMIT 1) AS last_seen_at,
         COALESCE(SUM(GREATEST(spend_count - 1, 0)), 0)::BIGINT
             AS canonical_double_spend_anomalies
     FROM owned o";
 
-const ADDRESS_ACTIVITY_QUERY: &str = "WITH canonical_tx AS MATERIALIZED (
+const ADDRESS_ACTIVITY_QUERY: &str = "WITH owned_outputs AS MATERIALIZED (
         SELECT c.height, c.block_hash, c.witness_hash, b.block_time,
-               bt.tx_position, ti.transaction_instance_id, ti.txid,
-               ti.auth_digest, ti.is_coinbase
-        FROM canonical_chain c
-        JOIN blocks b ON b.block_hash = c.block_hash
-        JOIN block_transactions bt
-          ON bt.block_hash = c.block_hash AND bt.witness_hash = c.witness_hash
+               bt.tx_position, ti.txid, ti.auth_digest, ti.is_coinbase,
+               o.output_index, o.value_zat
+        FROM transparent_outputs o
         JOIN transaction_instances ti
-          ON ti.transaction_instance_id = bt.transaction_instance_id
-        WHERE c.network_id = $1
+          ON ti.transaction_instance_id = o.transaction_instance_id
+        JOIN block_transactions bt
+          ON bt.transaction_instance_id = ti.transaction_instance_id
+        JOIN canonical_chain c
+          ON c.block_hash = bt.block_hash AND c.witness_hash = bt.witness_hash
+        JOIN blocks b ON b.block_hash = c.block_hash
+        WHERE c.network_id = $1 AND o.address = $2
     ), deltas AS (
-        SELECT tx.height, tx.block_hash, tx.witness_hash, tx.block_time,
-               tx.tx_position, tx.txid, tx.auth_digest, tx.is_coinbase,
-               SUM(o.value_zat)::BIGINT AS received_zat, 0::BIGINT AS spent_zat
-        FROM canonical_tx tx
-        JOIN transparent_outputs o
-          ON o.transaction_instance_id = tx.transaction_instance_id
-        WHERE o.address = $2
-        GROUP BY tx.height, tx.block_hash, tx.witness_hash, tx.block_time,
-                 tx.tx_position, tx.txid, tx.auth_digest, tx.is_coinbase
+        SELECT receiving.height, receiving.block_hash, receiving.witness_hash,
+               receiving.block_time, receiving.tx_position, receiving.txid,
+               receiving.auth_digest, receiving.is_coinbase,
+               SUM(receiving.value_zat)::BIGINT AS received_zat,
+               0::BIGINT AS spent_zat
+        FROM owned_outputs receiving
+        GROUP BY receiving.height, receiving.block_hash, receiving.witness_hash,
+                 receiving.block_time, receiving.tx_position, receiving.txid,
+                 receiving.auth_digest, receiving.is_coinbase
         UNION ALL
-        SELECT spending_tx.height, spending_tx.block_hash,
-               spending_tx.witness_hash, spending_tx.block_time,
-               spending_tx.tx_position, spending_tx.txid,
+        SELECT spending_chain.height, spending_chain.block_hash,
+               spending_chain.witness_hash, spending_block.block_time,
+               spending_bt.tx_position, spending_tx.txid,
                spending_tx.auth_digest, spending_tx.is_coinbase,
-               0::BIGINT, SUM(previous_output.value_zat)::BIGINT
-        FROM canonical_tx spending_tx
+               0::BIGINT, SUM(receiving.value_zat)::BIGINT
+        FROM owned_outputs receiving
         JOIN transparent_inputs input
-          ON input.transaction_instance_id = spending_tx.transaction_instance_id
-        JOIN canonical_tx previous_tx ON previous_tx.txid = input.previous_txid
-        JOIN transparent_outputs previous_output
-          ON previous_output.transaction_instance_id = previous_tx.transaction_instance_id
-         AND previous_output.output_index = input.previous_output_index
-        WHERE previous_output.address = $2
-        GROUP BY spending_tx.height, spending_tx.block_hash,
-                 spending_tx.witness_hash, spending_tx.block_time,
-                 spending_tx.tx_position, spending_tx.txid,
+          ON input.previous_txid = receiving.txid
+         AND input.previous_output_index = receiving.output_index
+        JOIN transaction_instances spending_tx
+          ON spending_tx.transaction_instance_id = input.transaction_instance_id
+        JOIN block_transactions spending_bt
+          ON spending_bt.transaction_instance_id = spending_tx.transaction_instance_id
+        JOIN canonical_chain spending_chain
+          ON spending_chain.block_hash = spending_bt.block_hash
+         AND spending_chain.witness_hash = spending_bt.witness_hash
+         AND spending_chain.network_id = $1
+        JOIN blocks spending_block
+          ON spending_block.block_hash = spending_chain.block_hash
+        GROUP BY spending_chain.height, spending_chain.block_hash,
+                 spending_chain.witness_hash, spending_block.block_time,
+                 spending_bt.tx_position, spending_tx.txid,
                  spending_tx.auth_digest, spending_tx.is_coinbase
     ), activity AS (
         SELECT height, block_hash, witness_hash, block_time, tx_position,
@@ -2615,6 +2708,29 @@ mod tests {
         assert_eq!(amount(625_000_000, &network()).decimal, "6.25000000");
         assert_eq!(amount(-1, &network()).decimal, "-0.00000001");
         assert_eq!(amount(0, &network()).zatoshi, "0");
+    }
+
+    #[test]
+    fn cumulative_amounts_remain_exact_beyond_i64() {
+        let amount = amount_from_zatoshi_text("123456789012345678901", &network())
+            .expect("valid exact database amount");
+        assert_eq!(amount.zatoshi, "123456789012345678901");
+        assert_eq!(amount.decimal, "1234567890123.45678901");
+        assert_eq!(amount.symbol, "tWEC");
+
+        let negative = amount_from_zatoshi_text("-000000001", &network())
+            .expect("valid negative exact database amount");
+        assert_eq!(negative.zatoshi, "-1");
+        assert_eq!(negative.decimal, "-0.00000001");
+        assert_eq!(
+            amount_from_zatoshi_text("-000", &network())
+                .expect("negative zero is normalized")
+                .decimal,
+            "0.00000000"
+        );
+        assert!(amount_from_zatoshi_text("1.0", &network()).is_err());
+        assert!(amount_from_zatoshi_text("+1", &network()).is_err());
+        assert!(amount_from_zatoshi_text("", &network()).is_err());
     }
 
     #[test]

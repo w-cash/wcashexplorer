@@ -44,6 +44,10 @@ struct ProblemDetails {
 
 impl IntoResponse for ExplorerError {
     fn into_response(self) -> Response {
+        let retryable_database_error = match &self {
+            Self::Database(error) => is_retryable_database_error(error),
+            _ => false,
+        };
         let (status, problem_type, title, detail) = match self {
             Self::NotFound => (
                 StatusCode::NOT_FOUND,
@@ -77,6 +81,12 @@ impl IntoResponse for ExplorerError {
                 "Configuration error",
                 message,
             ),
+            Self::Database(_) if retryable_database_error => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "https://wcashexplorer.com/problems/not-ready",
+                "Service not ready",
+                "The explorer database is temporarily busy; retry the request.".to_owned(),
+            ),
             Self::Database(_) | Self::Migration(_) | Self::RpcTransport(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "https://wcashexplorer.com/problems/internal",
@@ -91,14 +101,49 @@ impl IntoResponse for ExplorerError {
             detail,
             instance: format!("urn:uuid:{}", Uuid::new_v4()),
         };
-        (
+        let mut response = (
             status,
             [(http::header::CONTENT_TYPE, "application/problem+json")],
             Json(body),
         )
-            .into_response()
+            .into_response();
+        if retryable_database_error {
+            response.headers_mut().insert(
+                http::header::RETRY_AFTER,
+                "2".parse().expect("valid header"),
+            );
+        }
+        response
     }
+}
+
+fn is_retryable_database_error(error: &sqlx::Error) -> bool {
+    if matches!(
+        error,
+        sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::WorkerCrashed
+    ) {
+        return true;
+    }
+    error
+        .as_database_error()
+        .and_then(sqlx::error::DatabaseError::code)
+        .is_some_and(|code| matches!(code.as_ref(), "55P03" | "57014" | "53300" | "57P03"))
 }
 
 /// Explorer result alias.
 pub type Result<T> = std::result::Result<T, ExplorerError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transient_database_failures_are_retryable_without_internal_details() {
+        let response = ExplorerError::Database(sqlx::Error::PoolTimedOut).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get(http::header::RETRY_AFTER),
+            Some(&http::HeaderValue::from_static("2"))
+        );
+    }
+}
