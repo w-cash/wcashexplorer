@@ -431,6 +431,190 @@ a.hash:focus-visible {
   grid-column: 1 / -1;
 }
 
+.analytics-summary-grid,
+.anomaly-breakdown {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.analytics-summary-grid-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.anomaly-breakdown {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.verification-panel {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 0.8rem;
+}
+
+.verification-panel > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.verification-panel p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.verification-panel-success {
+  border-color: color-mix(in srgb, var(--brand) 55%, var(--border));
+}
+
+.verification-panel-success > svg {
+  color: var(--brand);
+}
+
+.verification-panel-warning {
+  border-color: var(--warning);
+}
+
+.verification-panel-warning > svg {
+  color: var(--warning);
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.chart-panel {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.chart-heading {
+  min-height: 76px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--raised);
+}
+
+.chart-heading h2 {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 650;
+}
+
+.chart-heading p {
+  max-width: 720px;
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.chart-canvas {
+  height: 260px;
+  padding: 8px 10px 0;
+}
+
+.chart-canvas svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.chart-grid-line {
+  stroke: var(--border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-reference-line {
+  stroke: var(--faint);
+  stroke-width: 1;
+  stroke-dasharray: 5 5;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-axis-label {
+  fill: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.chart-point {
+  stroke: var(--surface);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-empty {
+  display: grid;
+  min-height: 230px;
+  place-items: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.chart-legend {
+  display: flex;
+  min-height: 43px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.chart-legend-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.chart-legend-item strong {
+  color: var(--text);
+  font-size: 0.68rem;
+  font-weight: 550;
+}
+
+.chart-legend-swatch {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.chart-legend-rule {
+  width: 14px;
+  flex: 0 0 auto;
+  border-top: 1px dashed var(--faint);
+}
+
+.privacy-boundary {
+  padding: 13px 16px;
+  border-left: 2px solid var(--brand);
+  background: var(--surface);
+  font-size: 0.8rem;
+}
+
+.privacy-boundary p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
 .skeleton {
   overflow: hidden;
   position: relative;
@@ -468,6 +652,19 @@ a.hash:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  .analytics-summary-grid,
+  .anomaly-breakdown {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-summary-grid-three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .chart-grid {
+    grid-template-columns: 1fr;
+  }
+
   .definition-cell,
   .proof-stage {
     border-right: 0;
@@ -499,6 +696,12 @@ a.hash:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  .analytics-summary-grid,
+  .analytics-summary-grid-three,
+  .anomaly-breakdown {
+    grid-template-columns: 1fr;
+  }
+
   .stat-cell,
   .stat-cell:nth-child(2),
   .stats-strip-three .stat-cell:nth-child(2) {
@@ -512,6 +715,23 @@ a.hash:focus-visible {
 
   .stat-cell:last-child {
     border-bottom: 0;
+  }
+
+  .analytics-summary-grid .stat-cell,
+  .analytics-summary-grid-three .stat-cell,
+  .anomaly-breakdown .stat-cell {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .analytics-summary-grid .stat-cell:last-child,
+  .analytics-summary-grid-three .stat-cell:last-child,
+  .anomaly-breakdown .stat-cell:last-child {
+    border-bottom: 0;
+  }
+
+  .chart-canvas {
+    height: 220px;
   }
 
   .data-table,

@@ -20,6 +20,7 @@ import {
   type Status,
   type TransactionDetail,
   type TransactionSummary,
+  ExplorerApiError,
   loadAddress,
   loadBlock,
   loadBlocks,
@@ -37,6 +38,12 @@ import {
   relativeTime,
   trimAmount,
 } from './dashboard';
+import {
+  AddressBalanceChart,
+  MergeMiningAnalytics,
+  NetworkAnalytics,
+  WcashValuePools,
+} from './explorer-analytics';
 import { SearchBox } from './search-box';
 
 type Resource<T> = {
@@ -226,10 +233,13 @@ export function AddressPage({ address }: { address: string }) {
     const controller = new AbortController();
     void loadAddress(address, controller.signal).then(
       (envelope) => setResource({ envelope, error: '', loading: false }),
-      () =>
+      (error) =>
         setResource({
           envelope: null,
-          error: 'That transparent address was not found.',
+          error:
+            error instanceof ExplorerApiError && error.status === 400
+              ? 'That is not a valid Wcash transparent address for this network.'
+              : 'That transparent address was not found on the canonical chain.',
           loading: false,
         }),
     );
@@ -279,15 +289,6 @@ export function MergeMiningPage() {
   }, []);
 
   const blocks = resource.envelope?.data ?? [];
-  const auxPowBlocks = blocks.filter(
-    (block) => block.mergeMining.localValidationState !== 'genesis',
-  );
-  const localProofs = blocks.filter(
-    (block) => block.mergeMining.localValidationState === 'auxpow_verified',
-  ).length;
-  const canonicalParents = blocks.filter(
-    (block) => block.mergeMining.parentLookupState === 'canonical',
-  ).length;
 
   return (
     <PageFrame
@@ -295,17 +296,7 @@ export function MergeMiningPage() {
       title="Merge mining"
       description="Wcash AuxPoW validation and observations from configured Zcash nodes."
     >
-      <div className="stats-strip stats-strip-three">
-        <SummaryMetric label="Blocks shown" value={blocks.length.toString()} />
-        <SummaryMetric
-          label="Valid AuxPoW"
-          value={`${localProofs} of ${auxPowBlocks.length}`}
-        />
-        <SummaryMetric
-          label="Parent observed"
-          value={canonicalParents.toString()}
-        />
-      </div>
+      <MergeMiningAnalytics />
       <section className="panel overflow-hidden">
         <SectionHeader title="Verification states" />
         <div className="definition-grid">
@@ -323,9 +314,12 @@ export function MergeMiningPage() {
           />
         </div>
       </section>
-      <ResourceState loading={resource.loading} error={resource.error}>
-        <BlockTable blocks={blocks} loading={false} />
-      </ResourceState>
+      <section>
+        <SectionTitle>Recent canonical evidence</SectionTitle>
+        <ResourceState loading={resource.loading} error={resource.error}>
+          <BlockTable blocks={blocks} loading={false} />
+        </ResourceState>
+      </section>
     </PageFrame>
   );
 }
@@ -336,22 +330,24 @@ export function NetworkPage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void Promise.all([
-      loadStatus(controller.signal),
-      loadReorgs(controller.signal),
-    ]).then(
-      ([statusEnvelope, reorgEnvelope]) => {
-        setStatus({ envelope: statusEnvelope, error: '', loading: false });
-        setReorgs({ envelope: reorgEnvelope, error: '', loading: false });
-      },
+    void loadStatus(controller.signal).then(
+      (envelope) => setStatus({ envelope, error: '', loading: false }),
       () => {
         setStatus({
           envelope: null,
           error: 'Network telemetry is unavailable.',
           loading: false,
         });
-        setReorgs({ envelope: null, error: '', loading: false });
       },
+    );
+    void loadReorgs(controller.signal).then(
+      (envelope) => setReorgs({ envelope, error: '', loading: false }),
+      () =>
+        setReorgs({
+          envelope: null,
+          error: 'Reorganization history is unavailable.',
+          loading: false,
+        }),
     );
     return () => controller.abort();
   }, []);
@@ -422,9 +418,12 @@ export function NetworkPage() {
           </>
         ) : null}
       </ResourceState>
+      <NetworkAnalytics />
       <section>
         <SectionTitle>Reorganizations</SectionTitle>
-        <ReorgTable events={reorgs.envelope?.data ?? []} />
+        <ResourceState loading={reorgs.loading} error={reorgs.error}>
+          <ReorgTable events={reorgs.envelope?.data ?? []} />
+        </ResourceState>
       </section>
     </PageFrame>
   );
@@ -548,41 +547,7 @@ function BlockDetailView({ block }: { block: BlockDetail }) {
       {block.valuePools.length ? (
         <section>
           <SectionTitle>Value pools</SectionTitle>
-          <div className="table-shell">
-            <table className="data-table">
-              <caption className="sr-only">
-                Public Wcash value-pool totals
-              </caption>
-              <thead>
-                <tr>
-                  <th>Pool</th>
-                  <th>Chain value</th>
-                  <th>Block change</th>
-                  <th>Monitored</th>
-                </tr>
-              </thead>
-              <tbody>
-                {block.valuePools.map((pool) => (
-                  <tr key={pool.id}>
-                    <td data-label="Pool">{humanize(pool.id)}</td>
-                    <td data-label="Chain value" className="mono">
-                      {formatAmount(pool.chainValue, 'Not monitored')}
-                    </td>
-                    <td data-label="Block change" className="mono">
-                      {formatAmount(pool.valueDelta, 'Not reported')}
-                    </td>
-                    <td data-label="Monitored">
-                      {pool.monitored === null
-                        ? 'Unknown'
-                        : pool.monitored
-                          ? 'Yes'
-                          : 'No'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <WcashValuePools pools={block.valuePools} />
         </section>
       ) : null}
     </div>
@@ -990,6 +955,23 @@ function AddressDetailView({ address }: { address: AddressDetail }) {
   return (
     <div className="space-y-6">
       <PrivacyNotice text={address.scopeNotice} />
+      {address.canonicalDoubleSpendAnomalies > 0 ? (
+        <div
+          role="alert"
+          className="panel flex items-start gap-3 border-[var(--danger)] p-4 text-sm"
+        >
+          <AlertTriangle
+            className="mt-0.5 shrink-0 text-[var(--danger)]"
+            size={16}
+          />
+          <p>
+            The index detected{' '}
+            {address.canonicalDoubleSpendAnomalies.toLocaleString()} canonical
+            double-spend anomaly record(s). Do not rely on this balance until
+            the index is audited.
+          </p>
+        </div>
+      ) : null}
       <section className="panel overflow-hidden">
         <SectionHeader title="Overview" />
         <dl className="record-grid p-4 sm:p-5">
@@ -1001,8 +983,29 @@ function AddressDetailView({ address }: { address: AddressDetail }) {
             mono
           />
           <Record
-            label="Mined outputs"
-            value={address.minedOutputCount.toLocaleString()}
+            label="Transactions"
+            value={address.transactionCount.toLocaleString()}
+            mono
+          />
+          <Record
+            label="Mined transactions / outputs"
+            value={`${address.minedTransactionCount.toLocaleString()} / ${address.minedOutputCount.toLocaleString()}`}
+            mono
+          />
+          <Record
+            label="First activity"
+            value={formatActivityBoundary(
+              address.firstSeenHeight,
+              address.firstSeenAt,
+            )}
+            mono
+          />
+          <Record
+            label="Last activity"
+            value={formatActivityBoundary(
+              address.lastSeenHeight,
+              address.lastSeenAt,
+            )}
             mono
           />
           <Record
@@ -1014,13 +1017,23 @@ function AddressDetailView({ address }: { address: AddressDetail }) {
       </section>
       <div className="stats-strip">
         <SummaryMetric
-          label="Transparent unspent"
+          label="Transparent balance"
           value={formatAmount(address.unspent)}
         />
         <SummaryMetric
           label="Transparent received"
           value={formatAmount(address.totalReceived)}
         />
+        <SummaryMetric
+          label="Transparent sent"
+          value={formatAmount(address.totalSent)}
+        />
+        <SummaryMetric
+          label="Transactions"
+          value={address.transactionCount.toLocaleString()}
+        />
+      </div>
+      <div className="stats-strip stats-strip-three">
         <SummaryMetric
           label="Immature coinbase"
           value={formatAmount(address.immatureCoinbase)}
@@ -1029,19 +1042,28 @@ function AddressDetailView({ address }: { address: AddressDetail }) {
           label="Mature coinbase requiring shielding"
           value={formatAmount(address.matureCoinbaseMustShield)}
         />
+        <SummaryMetric
+          label="Non-coinbase unspent"
+          value={formatAmount(address.nonCoinbaseUnspent)}
+        />
       </div>
+      <AddressBalanceChart address={address} />
       <section>
-        <SectionTitle>Received outputs</SectionTitle>
+        <SectionTitle>Transparent activity</SectionTitle>
         <div className="table-shell">
           <table className="data-table">
             <caption className="sr-only">
-              Latest transparent outputs received by this address
+              Canonical transparent transactions involving this address
             </caption>
             <thead>
               <tr>
                 <th>Block</th>
                 <th>Transaction</th>
+                <th>Direction</th>
                 <th>Received</th>
+                <th>Sent</th>
+                <th>Net</th>
+                <th>Balance after</th>
                 <th>Time (UTC)</th>
               </tr>
             </thead>
@@ -1049,7 +1071,7 @@ function AddressDetailView({ address }: { address: AddressDetail }) {
               {address.activity.length ? (
                 address.activity.map((activity) => (
                   <tr
-                    key={`${activity.txid}:${activity.authDigest}:${activity.blockHash}`}
+                    key={`${activity.txid}:${activity.authDigest}:${activity.blockHash}:${activity.position}`}
                   >
                     <td data-label="Block">
                       <Link
@@ -1071,11 +1093,28 @@ function AddressDetailView({ address }: { address: AddressDetail }) {
                         Authorization digest {activity.authDigest}
                       </span>
                     </td>
+                    <td data-label="Direction">
+                      {activity.isCoinbase
+                        ? 'Coinbase in'
+                        : humanize(activity.direction)}
+                    </td>
                     <td
                       data-label="Received"
                       className="mono whitespace-nowrap"
                     >
                       {formatAmount(activity.received)}
+                    </td>
+                    <td data-label="Sent" className="mono whitespace-nowrap">
+                      {formatAmount(activity.sent)}
+                    </td>
+                    <td data-label="Net" className="mono whitespace-nowrap">
+                      {formatAmount(activity.net)}
+                    </td>
+                    <td
+                      data-label="Balance after"
+                      className="mono whitespace-nowrap"
+                    >
+                      {formatAmount(activity.balanceAfter)}
                     </td>
                     <td data-label="Time (UTC)" className="whitespace-nowrap">
                       <time dateTime={activity.blockTime}>
@@ -1086,7 +1125,7 @@ function AddressDetailView({ address }: { address: AddressDetail }) {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={4}>No received outputs.</td>
+                  <td colSpan={8}>No transparent activity.</td>
                 </tr>
               )}
             </tbody>
@@ -1494,4 +1533,11 @@ function formatAmount(
   fallback = 'Unavailable',
 ) {
   return amount ? `${trimAmount(amount.decimal)} ${amount.symbol}` : fallback;
+}
+
+function formatActivityBoundary(height: number | null, time: string | null) {
+  if (height === null) return 'Unavailable';
+  return time
+    ? `#${height.toLocaleString()} · ${relativeTime(time)}`
+    : `#${height.toLocaleString()}`;
 }

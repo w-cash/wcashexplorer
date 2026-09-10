@@ -171,19 +171,141 @@ export type AddressDetail = {
   address: string;
   addressType: string;
   totalReceived: Amount;
+  totalSent: Amount;
   unspent: Amount;
   immatureCoinbase: Amount;
   matureCoinbaseMustShield: Amount;
+  nonCoinbaseUnspent: Amount;
   utxoCount: number;
   minedOutputCount: number;
+  minedTransactionCount: number;
+  transactionCount: number;
+  firstSeenHeight: number | null;
+  lastSeenHeight: number | null;
+  firstSeenAt: string | null;
+  lastSeenAt: string | null;
   coinbaseMaturity: number;
+  canonicalDoubleSpendAnomalies: number;
   activity: Array<{
     txid: string;
     authDigest: string;
     blockHeight: number;
     blockHash: string;
     blockTime: string;
+    position: number;
+    isCoinbase: boolean;
+    direction: 'in' | 'out' | 'self' | 'neutral';
     received: Amount;
+    sent: Amount;
+    net: Amount;
+    balanceAfter: Amount;
+  }>;
+  scopeNotice: string;
+};
+
+export type NetworkHistoryPoint = {
+  height: number;
+  hash: string;
+  time: string;
+  difficulty: string;
+  spacingSeconds: number | null;
+  sizeBytes: number;
+  transactionCount: number;
+  totalIssued: Amount | null;
+};
+
+export type NetworkHistory = {
+  asOfHeight: number | null;
+  asOfHash: string | null;
+  targetSpacingSeconds: number;
+  points: NetworkHistoryPoint[];
+};
+
+export type PoolSnapshot = {
+  id: string;
+  chainValue: Amount | null;
+  valueDelta: Amount | null;
+  monitored: boolean | null;
+};
+
+export type ValuePoolHistory = {
+  asOfHeight: number | null;
+  asOfHash: string | null;
+  unexpectedPoolSamples: number;
+  scopeNotice: string;
+  points: Array<{
+    height: number;
+    hash: string;
+    time: string;
+    totalIssued: Amount | null;
+    transparent: PoolSnapshot;
+    ironwood: PoolSnapshot;
+  }>;
+};
+
+export type MergeMiningStats = {
+  asOfHeight: number | null;
+  asOfHash: string | null;
+  eligibleChildBlocks: number;
+  auxpowBlocks: number;
+  locallyVerifiedBlocks: number;
+  parentTargetVerifiedBlocks: number;
+  canonicalParentBlocks: number;
+  orphanedParentBlocks: number;
+  notFoundParentBlocks: number;
+  unavailableParentBlocks: number;
+  disagreementParentBlocks: number;
+  parentQuorumAgreementBlocks: number;
+  bestChainWitnessBlocks: number;
+  fullyVerifiedBlocks: number;
+  anomalyBlocks: number;
+  observationSourceCount: number;
+  lastVerifiedAt: string | null;
+  scopeNotice: string;
+};
+
+export type TransparentAddressStats = {
+  asOfHeight: number | null;
+  asOfHash: string | null;
+  fundedAddressCount: number;
+  seenAddressCount: number;
+  addressedBalance: Amount;
+  transparentPool: Amount | null;
+  transparentPoolMonitored: boolean | null;
+  addresslessOrUndecodedBalance: Amount | null;
+  points: Array<{
+    height: number;
+    time: string;
+    activeAddresses: number;
+    newAddresses: number;
+    totalSeenAddresses: number;
+  }>;
+  scopeNotice: string;
+};
+
+export type TransparentRichList = {
+  asOfHeight: number | null;
+  asOfHash: string | null;
+  transparentPool: Amount | null;
+  transparentPoolMonitored: boolean | null;
+  fundedAddressCount: number;
+  addressedBalance: Amount;
+  addresslessOrUndecodedBalance: Amount | null;
+  top1Balance: Amount;
+  top10Balance: Amount;
+  top100Balance: Amount;
+  addresses: Array<{
+    rank: number;
+    address: string;
+    balance: Amount;
+    totalReceived: Amount;
+    totalSent: Amount;
+    transparentPoolSharePercent: string | null;
+    utxoCount: number;
+    transactionCount: number;
+    firstSeenHeight: number | null;
+    lastSeenHeight: number | null;
+    lastSeenAt: string | null;
   }>;
   scopeNotice: string;
 };
@@ -425,6 +547,21 @@ export const loadStatus = (signal?: AbortSignal) =>
 
 export const loadReorgs = (signal?: AbortSignal) =>
   api<Reorg[]>('/api/v1/reorgs', signal);
+
+export const loadNetworkHistory = (signal?: AbortSignal) =>
+  api<NetworkHistory>('/api/v1/network/history?limit=240', signal);
+
+export const loadValuePoolHistory = (signal?: AbortSignal) =>
+  api<ValuePoolHistory>('/api/v1/value-pools/history?limit=240', signal);
+
+export const loadMergeMiningStats = (signal?: AbortSignal) =>
+  api<MergeMiningStats>('/api/v1/merge-mining/stats', signal);
+
+export const loadTransparentAddressStats = (signal?: AbortSignal) =>
+  api<TransparentAddressStats>('/api/v1/addresses/stats?limit=240', signal);
+
+export const loadTransparentRichList = (signal?: AbortSignal) =>
+  api<TransparentRichList>('/api/v1/addresses/rich-list?limit=100', signal);
 
 export async function resolveSearch(query: string): Promise<string> {
   const response = await api<{ route: string }>(
