@@ -9,6 +9,7 @@ import type { ReactNode } from 'react';
 const navigation = [
   { href: '/blocks', label: 'Blocks' },
   { href: '/txs', label: 'Transactions' },
+  { href: '/addresses', label: 'Addresses' },
   { href: '/merge-mining', label: 'Merge mining' },
   { href: '/network', label: 'Network' },
 ];
@@ -16,6 +17,7 @@ const navigation = [
 function isActive(pathname: string, href: string) {
   if (pathname === href || pathname.startsWith(`${href}/`)) return true;
   if (href === '/blocks' && pathname.startsWith('/block/')) return true;
+  if (href === '/addresses' && pathname.startsWith('/address/')) return true;
   return href === '/txs' && pathname.startsWith('/tx/');
 }
 
