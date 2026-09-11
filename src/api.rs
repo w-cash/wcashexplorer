@@ -1253,7 +1253,7 @@ fn openapi_schemas() -> Value {
                     "orphanedParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
                     "notFoundParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
                     "unavailableParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
-                    "disagreementParentBlocks": {"type": "integer", "format": "int64", "minimum": 0, "description": "Blocks whose configured Zcash observations do not establish source agreement. Blocks with no configured observer are excluded."},
+                    "disagreementParentBlocks": {"type": "integer", "format": "int64", "minimum": 0, "description": "Blocks whose configured Zcash observations contain conflicting evidence or do not establish source agreement. Blocks with no configured observer are excluded."},
                     "parentQuorumAgreementBlocks": {"type": "integer", "format": "int64", "minimum": 0},
                     "bestChainWitnessBlocks": {"type": "integer", "format": "int64", "minimum": 0},
                     "fullyVerifiedBlocks": {"type": "integer", "format": "int64", "minimum": 0, "description": "Blocks with valid Wcash evidence plus agreeing canonical Zcash-parent observations."},

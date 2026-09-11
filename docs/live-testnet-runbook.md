@@ -47,10 +47,21 @@ uncommitted working tree.
 
 ## Configure and start
 
-Configure the Wcash observer node from
-`deploy/wcash-testnet-explorer-node.toml.example`. Replace its documentation-only
+The explorer repository does not build or install the consensus node. First
+install `wcash-zebrad` from the reviewed Wcash node revision
+[`72038cee`](https://github.com/w-cash/wolf/tree/72038ceef70b297a1ef771177a3f45a88f53474c),
+which is also the AuxPoW dependency revision pinned by this release. Install an
+operator-owned base unit named `wcash-testnet-node.service`; the upstream unit
+source is
+[`zebrad/systemd/zebrad.service`](https://github.com/w-cash/wolf/blob/72038ceef70b297a1ef771177a3f45a88f53474c/zebrad/systemd/zebrad.service).
+The base unit must exist before installing the explorer-specific drop-in below.
+
+Install `deploy/wcash-testnet-explorer-node.toml.example` as
+`/srv/wcash-testnet/config/wcash-testnet.toml`. Replace its documentation-only
 seed with an operator-approved Wcash Testnet peer, and keep its P2P, RPC, and
-lightwallet listeners on loopback. Install
+lightwallet listeners on loopback. Configure the base unit to run the reviewed
+binary with `-c /srv/wcash-testnet/config/wcash-testnet.toml` under a locked
+service account. Install
 `deploy/systemd/wcash-node-reconnect-delay.conf` as
 `/etc/systemd/system/wcash-testnet-node.service.d/reconnect-delay.conf`. The
 delay avoids repeatedly reconnecting inside the Testnet seed's per-IP cooldown.

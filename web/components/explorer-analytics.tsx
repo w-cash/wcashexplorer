@@ -117,7 +117,7 @@ export function MergeMiningAnalytics() {
           {stats.anomalyBlocks > 0 ? (
             <div className="anomaly-breakdown">
               <Metric
-                label="Parent quorum incomplete"
+                label="Parent evidence mismatch/incomplete"
                 value={stats.disagreementParentBlocks.toLocaleString()}
               />
               <Metric

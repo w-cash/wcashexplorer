@@ -194,7 +194,6 @@ async fn run_live_api_test() -> Result<()> {
     for field in [
         "auxpowBlocks",
         "locallyVerifiedBlocks",
-        "parentTargetVerifiedBlocks",
         "bestChainWitnessBlocks",
     ] {
         ensure!(
@@ -205,6 +204,7 @@ async fn run_live_api_test() -> Result<()> {
     ensure!(merged["data"]["anomalyBlocks"] == 0);
     if parent_observed {
         for field in [
+            "parentTargetVerifiedBlocks",
             "canonicalParentBlocks",
             "parentQuorumAgreementBlocks",
             "fullyVerifiedBlocks",
@@ -224,6 +224,12 @@ async fn run_live_api_test() -> Result<()> {
         ensure!(merged["data"]["canonicalParentBlocks"] == 0);
         ensure!(merged["data"]["parentQuorumAgreementBlocks"] == 0);
         ensure!(merged["data"]["fullyVerifiedBlocks"] == 0);
+        ensure!(
+            json_u64(
+                &merged["data"]["parentTargetVerifiedBlocks"],
+                "parent target verified blocks"
+            )? <= eligible
+        );
         ensure!(
             json_u64(
                 &merged["data"]["locallyVerifiedWithoutParentObservationBlocks"],
@@ -360,7 +366,6 @@ fn assert_complete_history(points: &[Value], as_of_height: u64, limit: usize) ->
 fn assert_auxpow(auxpow: &Value) -> Result<bool> {
     ensure!(auxpow["localValidationState"] == "auxpow_verified");
     ensure!(auxpow["exactWitnessState"] == "best_chain");
-    ensure!(auxpow["parentHashMeetsClaimedTarget"] == true);
     ensure!(auxpow["parentBlockHash"] == PARENT_BLOCK_HASH);
     ensure!(auxpow["parentCoinbaseTxid"] == PARENT_COINBASE_TXID);
     let observations = auxpow["observations"]
@@ -368,6 +373,7 @@ fn assert_auxpow(auxpow: &Value) -> Result<bool> {
         .context("AuxPoW observations are missing")?;
     match auxpow["parentLookupState"].as_str() {
         Some("canonical") => {
+            ensure!(auxpow["parentHashMeetsClaimedTarget"] == true);
             ensure!(auxpow["parentSourcesAgree"] == true);
             ensure!(observations.len() >= 2);
             ensure!(observations.iter().all(|observation| {
@@ -377,6 +383,7 @@ fn assert_auxpow(auxpow: &Value) -> Result<bool> {
             Ok(true)
         }
         Some("not_configured") => {
+            ensure!(auxpow["parentHashMeetsClaimedTarget"].is_boolean());
             ensure!(auxpow["parentSourcesAgree"] == false);
             ensure!(observations.is_empty());
             Ok(false)

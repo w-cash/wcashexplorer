@@ -535,6 +535,25 @@ async fn exercise_analytics(database_url: &str) -> Result<()> {
     ensure!(incomplete_merge["data"]["disagreementParentBlocks"] == 1);
     ensure!(incomplete_merge["data"]["anomalyBlocks"] == 1);
 
+    let mut agreeing_header_mismatch = new_two.clone();
+    let mismatched_auxpow = agreeing_header_mismatch
+        .auxpow
+        .as_mut()
+        .expect("fixture AuxPoW");
+    for observation in &mut mismatched_auxpow.parent_observations {
+        observation.state = ParentLookupState::Disagreement;
+        observation.embedded_header_matches = Some(false);
+    }
+    mismatched_auxpow.parent_lookup_state = ParentLookupState::Disagreement;
+    mismatched_auxpow.parent_sources_agree = true;
+    database
+        .refresh_block_evidence("testnet", &agreeing_header_mismatch)
+        .await?;
+    let mismatch_merge = get_json(&app, "/api/v1/merge-mining/stats").await?;
+    ensure!(mismatch_merge["data"]["fullyVerifiedBlocks"] == 1);
+    ensure!(mismatch_merge["data"]["disagreementParentBlocks"] == 1);
+    ensure!(mismatch_merge["data"]["anomalyBlocks"] == 1);
+
     for observed_block in [&block_one, &new_two] {
         let mut without_parent_observation = observed_block.clone();
         let auxpow = without_parent_observation

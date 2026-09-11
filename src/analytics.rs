@@ -765,7 +765,10 @@ const MERGE_MINING_STATS_QUERY: &str = "WITH evidence AS (
             WHERE height > 0
               AND has_auxpow
               AND parent_lookup_state <> 'not_configured'
-              AND parent_sources_agree IS NOT TRUE
+              AND (
+                    parent_lookup_state = 'disagreement'
+                 OR parent_sources_agree IS NOT TRUE
+              )
         )::BIGINT AS disagreement_parent_blocks,
         COUNT(*) FILTER (
             WHERE height > 0 AND parent_sources_agree IS TRUE
