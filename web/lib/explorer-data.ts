@@ -348,7 +348,7 @@ const previewBlocks: BlockSummary[] = hashes.map((hash, index) => ({
   transactionCount: 1,
   bits: '1e008859',
   difficulty: '1',
-  reward: { zatoshi: '625000000', decimal: '6.25000000', symbol: 'tWEC' },
+  reward: { zatoshi: '625000000', decimal: '6.25000000', symbol: 'TWC' },
   confirmations: index + 1,
   mergeMining: {
     exactWitnessState: 'best_chain',
@@ -370,7 +370,7 @@ const previewProofBlock: BlockSummary = {
   transactionCount: 1,
   bits: '1e008859',
   difficulty: '1',
-  reward: { zatoshi: '625000000', decimal: '6.25000000', symbol: 'tWEC' },
+  reward: { zatoshi: '625000000', decimal: '6.25000000', symbol: 'TWC' },
   confirmations: 48,
   mergeMining: {
     exactWitnessState: 'best_chain',
@@ -389,7 +389,7 @@ export const unavailableDashboard: DashboardData = {
   status: {
     data: {
       networkName: 'Wcash Testnet',
-      symbol: 'tWEC',
+      symbol: 'TWC',
       status: 'unavailable',
       indexedHeight: null,
       nodeHeight: null,
@@ -398,16 +398,16 @@ export const unavailableDashboard: DashboardData = {
       difficulty: null,
       observedSpacingSeconds: null,
       targetSpacingSeconds: 75,
-      totalIssued: { zatoshi: '0', decimal: '0.00000000', symbol: 'tWEC' },
+      totalIssued: { zatoshi: '0', decimal: '0.00000000', symbol: 'TWC' },
       maxSupply: {
         zatoshi: '2100000000000000',
         decimal: '21000000.00000000',
-        symbol: 'tWEC',
+        symbol: 'TWC',
       },
       initialSubsidy: {
         zatoshi: '625000000',
         decimal: '6.25000000',
-        symbol: 'tWEC',
+        symbol: 'TWC',
       },
       nextHalvingHeight: 1_680_001,
       coinbaseMaturity: 100,
@@ -440,7 +440,7 @@ export const previewDashboard: DashboardData = {
   status: {
     data: {
       networkName: 'Wcash Testnet',
-      symbol: 'tWEC',
+      symbol: 'TWC',
       status: 'preview',
       indexedHeight: 48,
       nodeHeight: 48,
@@ -452,17 +452,17 @@ export const previewDashboard: DashboardData = {
       totalIssued: {
         zatoshi: '30000000000',
         decimal: '300.00000000',
-        symbol: 'tWEC',
+        symbol: 'TWC',
       },
       maxSupply: {
         zatoshi: '2100000000000000',
         decimal: '21000000.00000000',
-        symbol: 'tWEC',
+        symbol: 'TWC',
       },
       initialSubsidy: {
         zatoshi: '625000000',
         decimal: '6.25000000',
-        symbol: 'tWEC',
+        symbol: 'TWC',
       },
       nextHalvingHeight: 1_680_001,
       coinbaseMaturity: 100,

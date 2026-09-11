@@ -2835,7 +2835,7 @@ mod tests {
         NetworkConfig {
             id: "testnet".to_owned(),
             display_name: "Wcash Testnet".to_owned(),
-            symbol: "tWEC".to_owned(),
+            symbol: "TWC".to_owned(),
             decimals: 8,
             coinbase_maturity: 100,
             target_spacing_seconds: 75,
@@ -2862,7 +2862,7 @@ mod tests {
             .expect("valid exact database amount");
         assert_eq!(amount.zatoshi, "123456789012345678901");
         assert_eq!(amount.decimal, "1234567890123.45678901");
-        assert_eq!(amount.symbol, "tWEC");
+        assert_eq!(amount.symbol, "TWC");
 
         let negative = amount_from_zatoshi_text("-000000001", &network())
             .expect("valid negative exact database amount");

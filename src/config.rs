@@ -80,7 +80,7 @@ impl Config {
         let network = NetworkConfig {
             id: env_or("WCASH_NETWORK", "testnet"),
             display_name: env_or("WCASH_NETWORK_NAME", "Wcash Testnet"),
-            symbol: env_or("WCASH_SYMBOL", "tWEC"),
+            symbol: env_or("WCASH_SYMBOL", "TWC"),
             decimals: parse_env("WCASH_DECIMALS", 8)?,
             coinbase_maturity: parse_env("WCASH_COINBASE_MATURITY", 100)?,
             target_spacing_seconds: parse_env("WCASH_TARGET_SPACING_SECONDS", 75)?,
