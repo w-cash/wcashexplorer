@@ -251,6 +251,7 @@ async fn rich_list(
 
     let transparent_pool_zat = pool.as_ref().and_then(|row| row.chain_value_zat);
     let transparent_pool_monitored = pool.as_ref().and_then(|row| row.monitored);
+    let transparent_pool_reported = transparent_pool_zat.is_some();
     let totals = rows
         .first()
         .map_or_else(RichListTotals::default, |row| RichListTotals {
@@ -270,9 +271,7 @@ async fn rich_list(
                 total_received: amount_from_zatoshi_text(&row.total_received_zat, &state.network)?,
                 total_sent: amount_from_zatoshi_text(&row.total_sent_zat, &state.network)?,
                 transparent_pool_share_percent: transparent_pool_zat
-                    .filter(|denominator| {
-                        transparent_pool_monitored == Some(true) && *denominator > 0
-                    })
+                    .filter(|denominator| *denominator > 0)
                     .map(|denominator| exact_percent(row.balance_zat, denominator)),
                 utxo_count: row.utxo_count,
                 transaction_count: row.transaction_count,
@@ -284,15 +283,13 @@ async fn rich_list(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let unassigned = unassigned_transparent_balance(
-        transparent_pool_zat,
-        transparent_pool_monitored,
-        totals.addressed_balance_zat,
-    )?;
+    let unassigned =
+        unassigned_transparent_balance(transparent_pool_zat, totals.addressed_balance_zat)?;
     let data = RichListView {
         as_of_height: optional_height(chain.indexed_height)?,
         as_of_hash: chain.indexed_hash.clone(),
         transparent_pool: transparent_pool_zat.map(|value| amount(value, &state.network)),
+        transparent_pool_reported,
         transparent_pool_monitored,
         funded_address_count: totals.funded_address_count,
         addressed_balance: amount(totals.addressed_balance_zat, &state.network),
@@ -334,6 +331,7 @@ async fn address_stats(
     transaction.commit().await?;
     let transparent_pool_zat = pool.as_ref().and_then(|row| row.chain_value_zat);
     let transparent_pool_monitored = pool.as_ref().and_then(|row| row.monitored);
+    let transparent_pool_reported = transparent_pool_zat.is_some();
     let data = AddressStatsView {
         as_of_height: optional_height(chain.indexed_height)?,
         as_of_hash: chain.indexed_hash.clone(),
@@ -341,10 +339,10 @@ async fn address_stats(
         seen_address_count: current.seen_address_count,
         addressed_balance: amount(current.addressed_balance_zat, &state.network),
         transparent_pool: transparent_pool_zat.map(|value| amount(value, &state.network)),
+        transparent_pool_reported,
         transparent_pool_monitored,
         addressless_or_undecoded_balance: unassigned_transparent_balance(
             transparent_pool_zat,
-            transparent_pool_monitored,
             current.addressed_balance_zat,
         )?
         .map(|value| amount(value, &state.network)),
@@ -376,6 +374,7 @@ fn pool_snapshot(
         id: id.to_owned(),
         chain_value: chain_value_zat.map(|value| amount(value, &state.network)),
         value_delta: value_delta_zat.map(|value| amount(value, &state.network)),
+        reported: chain_value_zat.is_some(),
         monitored,
     }
 }
@@ -413,11 +412,10 @@ fn exact_percent(numerator: i64, denominator: i64) -> String {
 
 fn unassigned_transparent_balance(
     transparent_pool_zat: Option<i64>,
-    transparent_pool_monitored: Option<bool>,
     addressed_balance_zat: i64,
 ) -> Result<Option<i64>> {
-    match (transparent_pool_monitored, transparent_pool_zat) {
-        (Some(true), Some(transparent_pool_zat)) => transparent_pool_zat
+    match transparent_pool_zat {
+        Some(transparent_pool_zat) => transparent_pool_zat
             .checked_sub(addressed_balance_zat)
             .filter(|value| *value >= 0)
             .map(Some)
@@ -427,10 +425,7 @@ fn unassigned_transparent_balance(
                         .to_owned(),
                 )
             }),
-        (Some(true), None) => Err(ExplorerError::InvalidNodeResponse(
-            "the transparent value pool is marked monitored without an exact value".to_owned(),
-        )),
-        _ => Ok(None),
+        None => Ok(None),
     }
 }
 
@@ -488,6 +483,8 @@ pub struct PoolSnapshotView {
     pub id: String,
     pub chain_value: Option<AmountView>,
     pub value_delta: Option<AmountView>,
+    pub reported: bool,
+    /// Raw compatibility flag from the node; it is not a presence signal.
     pub monitored: Option<bool>,
 }
 
@@ -609,6 +606,7 @@ pub struct RichListView {
     pub as_of_height: Option<u64>,
     pub as_of_hash: Option<String>,
     pub transparent_pool: Option<AmountView>,
+    pub transparent_pool_reported: bool,
     pub transparent_pool_monitored: Option<bool>,
     pub funded_address_count: i64,
     pub addressed_balance: AmountView,
@@ -655,6 +653,7 @@ pub struct AddressStatsView {
     pub seen_address_count: i64,
     pub addressed_balance: AmountView,
     pub transparent_pool: Option<AmountView>,
+    pub transparent_pool_reported: bool,
     pub transparent_pool_monitored: Option<bool>,
     pub addressless_or_undecoded_balance: Option<AmountView>,
     pub points: Vec<AddressStatsPoint>,
@@ -971,18 +970,16 @@ mod tests {
     }
 
     #[test]
-    fn unassigned_balance_requires_consistent_monitored_data() {
+    fn unassigned_balance_uses_exact_reported_pool_data_including_zero() {
         assert_eq!(
-            unassigned_transparent_balance(Some(100), Some(true), 75)
-                .expect("consistent pool data"),
+            unassigned_transparent_balance(Some(100), 75).expect("consistent pool data"),
             Some(25)
         );
         assert_eq!(
-            unassigned_transparent_balance(Some(100), Some(false), 75)
-                .expect("unmonitored pool data is not used"),
-            None
+            unassigned_transparent_balance(Some(0), 0).expect("reported zero pool"),
+            Some(0)
         );
-        assert!(unassigned_transparent_balance(None, Some(true), 75).is_err());
-        assert!(unassigned_transparent_balance(Some(50), Some(true), 75).is_err());
+        assert_eq!(unassigned_transparent_balance(None, 75).unwrap(), None);
+        assert!(unassigned_transparent_balance(Some(50), 75).is_err());
     }
 }

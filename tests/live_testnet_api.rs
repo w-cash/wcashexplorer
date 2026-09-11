@@ -76,6 +76,12 @@ async fn run_live_api_test() -> Result<()> {
     ensure!(transaction["data"]["txid"] == BLOCK_ONE_TXID);
     ensure!(transaction["data"]["blockHash"] == BLOCK_ONE_HASH);
     ensure!(
+        transaction["data"]["instanceDigest"]
+            .as_str()
+            .is_some_and(|digest| digest.len() == 64)
+    );
+    ensure!(transaction["data"]["instanceDigestKind"] == "consensus-auth-digest");
+    ensure!(
         transaction["data"]["authDigest"]
             .as_str()
             .is_some_and(|digest| digest.len() == 64)
@@ -125,10 +131,15 @@ async fn run_live_api_test() -> Result<()> {
         .context("address activity is missing")?;
     ensure!(!activity.is_empty());
     ensure!(activity.iter().all(|row| {
-        row["authDigest"]
+        row["instanceDigest"]
             .as_str()
             .is_some_and(|digest| digest.len() == 64)
     }));
+
+    let genesis = get_json(&client, base_url, "/api/v1/blocks/0").await?;
+    let genesis_transaction = &genesis["data"]["transactions"][0];
+    ensure!(genesis_transaction["authDigest"].is_null());
+    ensure!(genesis_transaction["instanceDigestKind"] == "explorer-raw-hash");
 
     let network_history = get_json(&client, base_url, "/api/v1/network/history?limit=2048").await?;
     let network_height = json_u64(
@@ -161,17 +172,14 @@ async fn run_live_api_test() -> Result<()> {
         )? >= 0
     );
     ensure!(latest_pools["transparent"]["monitored"] == true);
-    let ironwood_monitored = latest_pools["ironwood"]["monitored"]
-        .as_bool()
-        .context("Ironwood monitoring state is not a boolean")?;
-    if ironwood_monitored {
-        ensure!(
-            amount_zatoshi(
-                &latest_pools["ironwood"]["chainValue"],
-                "Ironwood pool value"
-            )? >= 0
-        );
-    }
+    ensure!(latest_pools["transparent"]["reported"] == true);
+    ensure!(latest_pools["ironwood"]["reported"] == true);
+    ensure!(
+        amount_zatoshi(
+            &latest_pools["ironwood"]["chainValue"],
+            "Ironwood pool value"
+        )? >= 0
+    );
 
     let merged = get_json(&client, base_url, "/api/v1/merge-mining/stats").await?;
     let merged_height = json_u64(
@@ -218,6 +226,7 @@ async fn run_live_api_test() -> Result<()> {
     ensure!(listed_addresses[0]["rank"] == 1);
     ensure!(amount_zatoshi(&rich_list["data"]["addressedBalance"], "addressed balance")? > 0);
     ensure!(rich_list["data"]["transparentPoolMonitored"] == true);
+    ensure!(rich_list["data"]["transparentPoolReported"] == true);
 
     let address_stats = get_json(&client, base_url, "/api/v1/addresses/stats?limit=2048").await?;
     let address_stats_height = json_u64(

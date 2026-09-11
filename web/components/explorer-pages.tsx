@@ -793,10 +793,21 @@ function TransactionDetailView({
           <Record label="Transaction ID" value={transaction.txid} mono wide />
           <Record
             label="Authorization digest"
-            value={transaction.authDigest}
-            mono
+            value={
+              transaction.authDigest ??
+              'Not defined for this transaction version'
+            }
+            mono={transaction.authDigest !== null}
             wide
           />
+          {transaction.instanceDigestKind === 'explorer-raw-hash' ? (
+            <Record
+              label="Explorer instance fingerprint"
+              value={transaction.instanceDigest}
+              mono
+              wide
+            />
+          ) : null}
           <Record label="Kind" value={humanize(transaction.kind)} />
           <Record label="Version" value={transaction.version.toString()} mono />
           <Record
@@ -1087,7 +1098,7 @@ function AddressDetailView({ address }: { address: AddressDetail }) {
               {address.activity.length ? (
                 address.activity.map((activity) => (
                   <tr
-                    key={`${activity.txid}:${activity.authDigest}:${activity.blockHash}:${activity.position}`}
+                    key={`${activity.txid}:${activity.instanceDigest}:${activity.blockHash}:${activity.position}`}
                   >
                     <td data-label="Block">
                       <Link
@@ -1104,10 +1115,12 @@ function AddressDetailView({ address }: { address: AddressDetail }) {
                       >
                         {middleEllipsis(activity.txid, 28)}
                       </Link>
-                      <span className="sr-only">
-                        {' '}
-                        Authorization digest {activity.authDigest}
-                      </span>
+                      {activity.authDigest ? (
+                        <span className="sr-only">
+                          {' '}
+                          Authorization digest {activity.authDigest}
+                        </span>
+                      ) : null}
                     </td>
                     <td data-label="Direction">
                       {activity.isCoinbase
@@ -1183,7 +1196,7 @@ function TransactionTable({
         </thead>
         <tbody>
           {transactions.map((transaction) => (
-            <tr key={`${transaction.txid}:${transaction.authDigest}`}>
+            <tr key={`${transaction.txid}:${transaction.instanceDigest}`}>
               <td data-label="Transaction ID" data-wide="true">
                 <Link
                   href={`/tx/${transaction.txid}?block=${transaction.blockHash}`}
@@ -1191,10 +1204,12 @@ function TransactionTable({
                 >
                   {middleEllipsis(transaction.txid, 28)}
                 </Link>
-                <span className="sr-only">
-                  {' '}
-                  Authorization digest {transaction.authDigest}
-                </span>
+                {transaction.authDigest ? (
+                  <span className="sr-only">
+                    {' '}
+                    Authorization digest {transaction.authDigest}
+                  </span>
+                ) : null}
               </td>
               <td data-label="Kind">{humanize(transaction.kind)}</td>
               <td data-label="Block">

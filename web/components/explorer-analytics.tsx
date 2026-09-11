@@ -190,11 +190,11 @@ export function NetworkAnalytics() {
       label: `Block #${point.height.toLocaleString()}`,
       values: {
         transparent:
-          point.transparent.monitored === true
+          point.transparent.reported
             ? amountValue(point.transparent.chainValue)
             : null,
         ironwood:
-          point.ironwood.monitored === true
+          point.ironwood.reported
             ? amountValue(point.ironwood.chainValue)
             : null,
       },
@@ -245,16 +245,16 @@ export function NetworkAnalytics() {
             <div className="analytics-summary-grid analytics-summary-grid-three">
               <Metric
                 label="Transparent pool"
-                value={monitoredAmount(
+                value={reportedAmount(
                   latestPools?.transparent.chainValue ?? null,
-                  latestPools?.transparent.monitored ?? null,
+                  latestPools?.transparent.reported ?? false,
                 )}
               />
               <Metric
                 label="Ironwood pool"
-                value={monitoredAmount(
+                value={reportedAmount(
                   latestPools?.ironwood.chainValue ?? null,
-                  latestPools?.ironwood.monitored ?? null,
+                  latestPools?.ironwood.reported ?? false,
                 )}
               />
               <Metric
@@ -271,7 +271,7 @@ export function NetworkAnalytics() {
             ) : null}
             <ExplorerLineChart
               title="Public value-pool totals"
-              description={`${poolHistory.scopeNotice} Values are shown only when the node reports that pool as monitored.`}
+              description={`${poolHistory.scopeNotice} Non-null node values are exact, including a zero balance.`}
               points={poolPoints}
               series={[
                 {
@@ -372,9 +372,9 @@ export function AddressesPage() {
               />
               <Metric
                 label="Undecoded transparent"
-                value={monitoredAmount(
+                value={reportedAmount(
                   addressStats.addresslessOrUndecodedBalance,
-                  addressStats.transparentPoolMonitored,
+                  addressStats.transparentPoolReported,
                 )}
               />
             </div>
@@ -470,28 +470,28 @@ export function WcashValuePools({ pools }: { pools: ValuePool[] }) {
           <tbody>
             {expected.map((pool, index) => {
               const id = index === 0 ? 'Transparent' : 'Ironwood';
-              const monitored = pool?.monitored === true;
+              const reported = pool?.reported === true;
               return (
                 <tr key={id}>
                   <td data-label="Pool">{id}</td>
                   <td data-label="Chain value" className="mono">
-                    {monitored
+                    {reported
                       ? formatNullableAmount(pool?.chainValue ?? null)
-                      : 'Not monitored by node'}
+                      : 'Unavailable'}
                   </td>
                   <td data-label="Block change" className="mono">
-                    {monitored
+                    {reported
                       ? formatNullableAmount(pool?.valueDelta ?? null)
-                      : 'Not monitored by node'}
+                      : 'Unavailable'}
                   </td>
                   <td data-label="Node telemetry">
                     <span
                       className={`status-label ${
-                        monitored ? 'status-label-success' : 'status-label-info'
+                        reported ? 'status-label-success' : 'status-label-info'
                       }`}
                     >
                       <span className="status-dot" aria-hidden="true" />
-                      {monitored ? 'Monitored' : 'Unavailable'}
+                      {reported ? 'Reported' : 'Unavailable'}
                     </span>
                   </td>
                 </tr>
@@ -551,10 +551,10 @@ function TransparentBalanceTable({
                 {formatAmount(entry.balance)}
               </td>
               <td data-label="Share of transparent pool" className="mono">
-                {ranking.transparentPoolMonitored === true &&
+                {ranking.transparentPoolReported &&
                 entry.transparentPoolSharePercent !== null
                   ? `${trimPercent(entry.transparentPoolSharePercent)}%`
-                  : 'Not monitored'}
+                  : 'Unavailable'}
               </td>
               <td data-label="UTXOs" className="mono">
                 {entry.utxoCount.toLocaleString()}
@@ -664,8 +664,8 @@ function formatNullableAmount(amount: Amount | null) {
   return amount ? formatAmount(amount) : 'Unavailable';
 }
 
-function monitoredAmount(amount: Amount | null, monitored: boolean | null) {
-  return monitored === true ? formatNullableAmount(amount) : 'Not monitored';
+function reportedAmount(amount: Amount | null, reported: boolean) {
+  return reported ? formatNullableAmount(amount) : 'Unavailable';
 }
 
 function amountIsNonZero(amount: Amount | null) {

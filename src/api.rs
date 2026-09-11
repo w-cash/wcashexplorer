@@ -338,6 +338,7 @@ async fn block(
         value_delta: pool
             .value_delta_zat
             .map(|value| amount(value, &state.network)),
+        reported: pool.chain_value_zat.is_some(),
         monitored: pool.monitored,
     })
     .collect();
@@ -439,15 +440,8 @@ async fn transaction(
         .fetch_optional(state.database.pool())
         .await?
         .ok_or(ExplorerError::NotFound)?;
+    let instance_id = row.transaction_instance_id;
     let summary = TransactionSummary::from_row(row, &state.network)?;
-    let instance_id: i64 = sqlx::query_scalar(
-        "SELECT transaction_instance_id FROM transaction_instances
-         WHERE txid = $1 AND auth_digest = $2",
-    )
-    .bind(&summary.txid)
-    .bind(&summary.auth_digest)
-    .fetch_one(state.database.pool())
-    .await?;
     let inputs = sqlx::query_as::<_, InputView>(
         "SELECT input_index, previous_txid, previous_output_index, coinbase_data, sequence
          FROM transparent_inputs WHERE transaction_instance_id = $1 ORDER BY input_index",
@@ -522,6 +516,7 @@ pub(crate) async fn address(
             };
             AddressActivity {
                 txid: row.txid,
+                instance_digest: row.instance_digest,
                 auth_digest: row.auth_digest,
                 block_height: u64::try_from(row.block_height).unwrap_or(0),
                 block_hash: row.block_hash,
@@ -734,7 +729,7 @@ fn openapi_document() -> Value {
                 "get": {
                     "tags": ["Analytics"],
                     "summary": "Get Wcash value-pool history",
-                    "description": "Returns transparent and Ironwood aggregate pool telemetry. An unmonitored pool is not interpreted as a verified zero balance.",
+                    "description": "Returns transparent and Ironwood aggregate pool telemetry. A non-null chain value is exact, including zero; the legacy monitored flag is preserved separately.",
                     "operationId": "getValuePoolHistory",
                     "parameters": analytics_history_parameters(),
                     "responses": {
@@ -819,7 +814,7 @@ fn openapi_document() -> Value {
                 "get": {
                     "tags": ["Transactions"],
                     "summary": "List canonical transactions",
-                    "description": "Returns transaction instances newest first. A Zcash-family transaction is identified by txid and authDigest and is linked to its containing block.",
+                    "description": "Returns transaction instances newest first. Each instance has an internal digest; ZIP-244 authorization digests are null for transaction versions that do not define them.",
                     "operationId": "listTransactions",
                     "parameters": pagination_parameters(),
                     "responses": {
@@ -1172,12 +1167,13 @@ fn openapi_schemas() -> Value {
             },
             "ValuePool": {
                 "type": "object", "additionalProperties": false,
-                "required": ["id", "chainValue", "valueDelta", "monitored"],
+                "required": ["id", "chainValue", "valueDelta", "reported", "monitored"],
                 "properties": {
                     "id": {"type": "string"},
                     "chainValue": nullable_ref("Amount"),
                     "valueDelta": nullable_ref("Amount"),
-                    "monitored": nullable(json!({"type": "boolean"}))
+                    "reported": {"type": "boolean", "description": "True when the node supplied an exact chain value, including zero."},
+                    "monitored": nullable(json!({"type": "boolean", "description": "Raw legacy node flag; not a value-presence signal."}))
                 }
             }
         }),
@@ -1211,12 +1207,13 @@ fn openapi_schemas() -> Value {
             },
             "PoolSnapshot": {
                 "type": "object", "additionalProperties": false,
-                "required": ["id", "chainValue", "valueDelta", "monitored"],
+                "required": ["id", "chainValue", "valueDelta", "reported", "monitored"],
                 "properties": {
                     "id": {"type": "string", "enum": ["transparent", "ironwood"]},
                     "chainValue": nullable_ref("Amount"),
                     "valueDelta": nullable_ref("Amount"),
-                    "monitored": nullable(json!({"type": "boolean"}))
+                    "reported": {"type": "boolean", "description": "True when the node supplied an exact chain value, including zero."},
+                    "monitored": nullable(json!({"type": "boolean", "description": "Raw legacy node flag; not a value-presence signal."}))
                 }
             },
             "ValuePoolHistoryPoint": {
@@ -1290,12 +1287,13 @@ fn openapi_schemas() -> Value {
             },
             "RichList": {
                 "type": "object", "additionalProperties": false,
-                "required": ["asOfHeight", "asOfHash", "transparentPool", "transparentPoolMonitored", "fundedAddressCount", "addressedBalance", "addresslessOrUndecodedBalance", "top1Balance", "top10Balance", "top100Balance", "addresses", "scopeNotice"],
+                "required": ["asOfHeight", "asOfHash", "transparentPool", "transparentPoolReported", "transparentPoolMonitored", "fundedAddressCount", "addressedBalance", "addresslessOrUndecodedBalance", "top1Balance", "top10Balance", "top100Balance", "addresses", "scopeNotice"],
                 "properties": {
                     "asOfHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
                     "asOfHash": nullable_ref("Hash"),
                     "transparentPool": nullable_ref("Amount"),
-                    "transparentPoolMonitored": nullable(json!({"type": "boolean"})),
+                    "transparentPoolReported": {"type": "boolean"},
+                    "transparentPoolMonitored": nullable(json!({"type": "boolean", "description": "Raw legacy node flag; not a value-presence signal."})),
                     "fundedAddressCount": {"type": "integer", "format": "int64", "minimum": 0},
                     "addressedBalance": {"$ref": "#/components/schemas/Amount"},
                     "addresslessOrUndecodedBalance": nullable_ref("Amount"),
@@ -1319,7 +1317,7 @@ fn openapi_schemas() -> Value {
             },
             "AddressStats": {
                 "type": "object", "additionalProperties": false,
-                "required": ["asOfHeight", "asOfHash", "fundedAddressCount", "seenAddressCount", "addressedBalance", "transparentPool", "transparentPoolMonitored", "addresslessOrUndecodedBalance", "points", "scopeNotice"],
+                "required": ["asOfHeight", "asOfHash", "fundedAddressCount", "seenAddressCount", "addressedBalance", "transparentPool", "transparentPoolReported", "transparentPoolMonitored", "addresslessOrUndecodedBalance", "points", "scopeNotice"],
                 "properties": {
                     "asOfHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
                     "asOfHash": nullable_ref("Hash"),
@@ -1327,7 +1325,8 @@ fn openapi_schemas() -> Value {
                     "seenAddressCount": {"type": "integer", "format": "int64", "minimum": 0},
                     "addressedBalance": {"$ref": "#/components/schemas/Amount"},
                     "transparentPool": nullable_ref("Amount"),
-                    "transparentPoolMonitored": nullable(json!({"type": "boolean"})),
+                    "transparentPoolReported": {"type": "boolean"},
+                    "transparentPoolMonitored": nullable(json!({"type": "boolean", "description": "Raw legacy node flag; not a value-presence signal."})),
                     "addresslessOrUndecodedBalance": nullable_ref("Amount"),
                     "points": {"type": "array", "items": {"$ref": "#/components/schemas/AddressStatsPoint"}},
                     "scopeNotice": {"type": "string"}
@@ -1459,10 +1458,11 @@ fn openapi_schemas() -> Value {
             },
             "AddressActivity": {
                 "type": "object", "additionalProperties": false,
-                "required": ["txid", "authDigest", "blockHeight", "blockHash", "blockTime", "position", "isCoinbase", "direction", "received", "sent", "net", "balanceAfter"],
+                "required": ["txid", "instanceDigest", "authDigest", "blockHeight", "blockHash", "blockTime", "position", "isCoinbase", "direction", "received", "sent", "net", "balanceAfter"],
                 "properties": {
                     "txid": {"$ref": "#/components/schemas/Hash"},
-                    "authDigest": {"$ref": "#/components/schemas/Hash"},
+                    "instanceDigest": {"$ref": "#/components/schemas/Hash"},
+                    "authDigest": nullable_ref("Hash"),
                     "blockHeight": {"type": "integer", "format": "int64", "minimum": 0},
                     "blockHash": {"$ref": "#/components/schemas/Hash"},
                     "blockTime": {"$ref": "#/components/schemas/DateTime"},
@@ -1563,10 +1563,12 @@ fn extend_schema_group(target: &mut serde_json::Map<String, Value>, group: Value
 fn transaction_summary_schema() -> Value {
     json!({
         "type": "object",
-        "required": ["txid", "authDigest", "version", "sizeBytes", "isCoinbase", "kind", "fee", "publicOutputValue", "valueBalance", "transparentInputCount", "transparentOutputCount", "saplingSpendCount", "saplingOutputCount", "orchardActionCount", "ironwoodActionCount", "blockHeight", "blockHash", "blockTime", "position"],
+        "required": ["txid", "instanceDigest", "instanceDigestKind", "authDigest", "version", "sizeBytes", "isCoinbase", "kind", "fee", "publicOutputValue", "valueBalance", "transparentInputCount", "transparentOutputCount", "saplingSpendCount", "saplingOutputCount", "orchardActionCount", "ironwoodActionCount", "blockHeight", "blockHash", "blockTime", "position"],
         "properties": {
             "txid": {"$ref": "#/components/schemas/Hash"},
-            "authDigest": {"$ref": "#/components/schemas/Hash"},
+            "instanceDigest": {"$ref": "#/components/schemas/Hash"},
+            "instanceDigestKind": {"type": "string", "enum": ["consensus-auth-digest", "explorer-raw-hash"]},
+            "authDigest": nullable_ref("Hash"),
             "version": {"type": "integer", "format": "int64"},
             "sizeBytes": {"type": "integer", "format": "int64", "minimum": 0},
             "isCoinbase": {"type": "boolean"},
@@ -2145,13 +2147,18 @@ pub struct ValuePoolView {
     pub id: String,
     pub chain_value: Option<AmountView>,
     pub value_delta: Option<AmountView>,
+    pub reported: bool,
+    /// Raw compatibility flag from the node. Wcash nodes historically set
+    /// this false for an exactly zero pool, so consumers must use `reported`.
     pub monitored: Option<bool>,
 }
 
 #[derive(Clone, Debug, FromRow)]
 struct TransactionSummaryRow {
+    transaction_instance_id: i64,
     txid: String,
-    auth_digest: String,
+    instance_digest: String,
+    auth_digest: Option<String>,
     version: i64,
     size_bytes: i64,
     is_coinbase: bool,
@@ -2174,7 +2181,9 @@ struct TransactionSummaryRow {
 #[serde(rename_all = "camelCase")]
 pub struct TransactionSummary {
     pub txid: String,
-    pub auth_digest: String,
+    pub instance_digest: String,
+    pub instance_digest_kind: String,
+    pub auth_digest: Option<String>,
     pub version: i64,
     pub size_bytes: i64,
     pub is_coinbase: bool,
@@ -2210,8 +2219,15 @@ impl TransactionSummary {
         } else {
             "transparent"
         };
+        let instance_digest_kind = if row.version >= 5 {
+            "consensus-auth-digest"
+        } else {
+            "explorer-raw-hash"
+        };
         Ok(Self {
             txid: row.txid,
+            instance_digest: row.instance_digest,
+            instance_digest_kind: instance_digest_kind.to_owned(),
             auth_digest: row.auth_digest,
             version: row.version,
             size_bytes: row.size_bytes,
@@ -2412,7 +2428,8 @@ struct AddressActivityRow {
     block_hash: String,
     block_time: DateTime<Utc>,
     txid: String,
-    auth_digest: String,
+    instance_digest: String,
+    auth_digest: Option<String>,
     tx_position: i32,
     is_coinbase: bool,
     received_zat: i64,
@@ -2450,7 +2467,8 @@ pub struct AddressView {
 #[serde(rename_all = "camelCase")]
 pub struct AddressActivity {
     pub txid: String,
-    pub auth_digest: String,
+    pub instance_digest: String,
+    pub auth_digest: Option<String>,
     pub block_height: u64,
     pub block_hash: String,
     pub block_time: DateTime<Utc>,
@@ -2577,7 +2595,8 @@ const BLOCK_DETAIL_QUERY: &str =
      LIMIT 1";
 
 const TRANSACTION_SUMMARY_QUERY: &str =
-    "SELECT ti.txid, ti.auth_digest, ti.version, ti.size_bytes, ti.is_coinbase,
+    "SELECT ti.transaction_instance_id, ti.txid, ti.instance_digest, ti.auth_digest,
+            ti.version, ti.size_bytes, ti.is_coinbase,
             ti.fee_zat, ti.value_balance_zat, ti.sapling_spend_count,
             ti.sapling_output_count, ti.orchard_action_count, ti.ironwood_action_count,
             c.height AS block_height, c.block_hash, b.block_time, bt.tx_position,
@@ -2594,7 +2613,8 @@ const TRANSACTION_SUMMARY_QUERY: &str =
      LIMIT $4";
 
 const TRANSACTION_DETAIL_QUERY: &str =
-    "SELECT ti.txid, ti.auth_digest, ti.version, ti.size_bytes, ti.is_coinbase,
+    "SELECT ti.transaction_instance_id, ti.txid, ti.instance_digest, ti.auth_digest,
+            ti.version, ti.size_bytes, ti.is_coinbase,
             ti.fee_zat, ti.value_balance_zat, ti.sapling_spend_count,
             ti.sapling_output_count, ti.orchard_action_count, ti.ironwood_action_count,
             c.height AS block_height, c.block_hash, b.block_time, bt.tx_position,
@@ -2610,7 +2630,8 @@ const TRANSACTION_DETAIL_QUERY: &str =
      ORDER BY c.height DESC LIMIT 1";
 
 const TRANSACTIONS_FOR_BLOCK_QUERY: &str =
-    "SELECT ti.txid, ti.auth_digest, ti.version, ti.size_bytes, ti.is_coinbase,
+    "SELECT ti.transaction_instance_id, ti.txid, ti.instance_digest, ti.auth_digest,
+            ti.version, ti.size_bytes, ti.is_coinbase,
             ti.fee_zat, ti.value_balance_zat, ti.sapling_spend_count,
             ti.sapling_output_count, ti.orchard_action_count, ti.ironwood_action_count,
             b.height AS block_height, b.block_hash, b.block_time, bt.tx_position,
@@ -2645,7 +2666,7 @@ const AUXPOW_QUERY: &str = "SELECT a.proof_version, a.proof_size, a.parent_block
 
 const ADDRESS_BALANCE_QUERY: &str = "WITH owned_outputs AS MATERIALIZED (
         SELECT c.height, c.block_hash, c.witness_hash, b.block_time,
-               bt.tx_position, ti.txid, ti.auth_digest, ti.is_coinbase,
+               bt.tx_position, ti.txid, ti.instance_digest, ti.auth_digest, ti.is_coinbase,
                o.output_index, o.value_zat
         FROM transparent_outputs o
         JOIN transaction_instances ti
@@ -2675,7 +2696,7 @@ const ADDRESS_BALANCE_QUERY: &str = "WITH owned_outputs AS MATERIALIZED (
         SELECT receiving.height, receiving.block_hash,
                receiving.witness_hash, receiving.block_time,
                receiving.tx_position, receiving.txid,
-               receiving.auth_digest, receiving.is_coinbase,
+               receiving.instance_digest, receiving.auth_digest, receiving.is_coinbase,
                receiving.output_index, receiving.value_zat,
                COALESCE(s.spend_count, 0) AS spend_count
         FROM owned_outputs receiving
@@ -2736,7 +2757,7 @@ const ADDRESS_BALANCE_QUERY: &str = "WITH owned_outputs AS MATERIALIZED (
 
 const ADDRESS_ACTIVITY_QUERY: &str = "WITH owned_outputs AS MATERIALIZED (
         SELECT c.height, c.block_hash, c.witness_hash, b.block_time,
-               bt.tx_position, ti.txid, ti.auth_digest, ti.is_coinbase,
+               bt.tx_position, ti.txid, ti.instance_digest, ti.auth_digest, ti.is_coinbase,
                o.output_index, o.value_zat
         FROM transparent_outputs o
         JOIN transaction_instances ti
@@ -2750,18 +2771,18 @@ const ADDRESS_ACTIVITY_QUERY: &str = "WITH owned_outputs AS MATERIALIZED (
     ), deltas AS (
         SELECT receiving.height, receiving.block_hash, receiving.witness_hash,
                receiving.block_time, receiving.tx_position, receiving.txid,
-               receiving.auth_digest, receiving.is_coinbase,
+               receiving.instance_digest, receiving.auth_digest, receiving.is_coinbase,
                SUM(receiving.value_zat)::BIGINT AS received_zat,
                0::BIGINT AS spent_zat
         FROM owned_outputs receiving
         GROUP BY receiving.height, receiving.block_hash, receiving.witness_hash,
                  receiving.block_time, receiving.tx_position, receiving.txid,
-                 receiving.auth_digest, receiving.is_coinbase
+                 receiving.instance_digest, receiving.auth_digest, receiving.is_coinbase
         UNION ALL
         SELECT spending_chain.height, spending_chain.block_hash,
                spending_chain.witness_hash, spending_block.block_time,
                spending_bt.tx_position, spending_tx.txid,
-               spending_tx.auth_digest, spending_tx.is_coinbase,
+               spending_tx.instance_digest, spending_tx.auth_digest, spending_tx.is_coinbase,
                0::BIGINT, SUM(receiving.value_zat)::BIGINT
         FROM owned_outputs receiving
         JOIN transparent_inputs input
@@ -2780,24 +2801,25 @@ const ADDRESS_ACTIVITY_QUERY: &str = "WITH owned_outputs AS MATERIALIZED (
         GROUP BY spending_chain.height, spending_chain.block_hash,
                  spending_chain.witness_hash, spending_block.block_time,
                  spending_bt.tx_position, spending_tx.txid,
-                 spending_tx.auth_digest, spending_tx.is_coinbase
+                 spending_tx.instance_digest, spending_tx.auth_digest, spending_tx.is_coinbase
     ), activity AS (
         SELECT height, block_hash, witness_hash, block_time, tx_position,
-               txid, auth_digest, BOOL_OR(is_coinbase) AS is_coinbase,
+               txid, instance_digest, auth_digest, BOOL_OR(is_coinbase) AS is_coinbase,
                SUM(received_zat)::BIGINT AS received_zat,
                SUM(spent_zat)::BIGINT AS spent_zat
         FROM deltas
         GROUP BY height, block_hash, witness_hash, block_time,
-                 tx_position, txid, auth_digest
+                 tx_position, txid, instance_digest, auth_digest
     ), running AS (
         SELECT *, (received_zat - spent_zat)::BIGINT AS net_zat,
                SUM(received_zat - spent_zat) OVER (
-                   ORDER BY height, tx_position, txid, auth_digest
+                   ORDER BY height, tx_position, txid, instance_digest
                )::BIGINT AS balance_after_zat
         FROM activity
     )
     SELECT block_height.height AS block_height, block_height.block_hash,
-           block_height.block_time, block_height.txid, block_height.auth_digest,
+           block_height.block_time, block_height.txid, block_height.instance_digest,
+           block_height.auth_digest,
            block_height.tx_position, block_height.is_coinbase,
            block_height.received_zat, block_height.spent_zat,
            block_height.net_zat, block_height.balance_after_zat

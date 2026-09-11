@@ -132,8 +132,9 @@ The public API is read-only and rooted at `/api/v1`:
 
 Pagination uses opaque cursors. Atomic amounts are serialized as strings so
 JavaScript clients cannot silently lose precision. Transaction identity retains
-both `txid` and the ZIP-244 authorization digest; callers may provide a block
-hash when resolving a transaction instance. Analytics responses are anchored to
+`txid`, an internal instance fingerprint, and the ZIP-244 authorization digest
+when that transaction version defines one. Callers may provide a block hash
+when resolving a transaction instance. Analytics responses are anchored to
 one repeatable-read canonical snapshot, and detached reorganization data is
 excluded from public search, balances, histories, and rankings.
 
