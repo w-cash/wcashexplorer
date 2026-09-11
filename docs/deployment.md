@@ -137,6 +137,9 @@ The primary profile is assembled from these reviewed templates:
 - `deploy/systemd/wcashexplorer-web.service`: standalone web unit;
 - `deploy/nginx/wcashexplorer.conf`: same-origin web/API reverse proxy for
   `testnet.wcashexplorer.com`;
+- `deploy/nginx/wcash-wallet-rpc.conf`: TLS and rate-limited compact-wallet
+  gRPC ingress for `wallet-testnet.wcashexplorer.com`, with node JSON-RPC kept
+  private;
 - `landing/` and `deploy/nginx/wcashexplorer-landing.conf`: dependency-free
   apex landing page for `wcashexplorer.com` and `www.wcashexplorer.com`, kept
   separate from the Testnet application;
@@ -194,6 +197,19 @@ set both `*_USERNAME` and `*_PASSWORD` through the runtime secret store.
 Never embed credentials in an RPC URL. The application rejects URL userinfo.
 Never bake cookies or passwords into an image, Compose file, shell history, or
 repository.
+
+### Compact-wallet ingress
+
+The optional public wallet endpoint forwards only the
+`cash.z.wallet.sdk.rpc.CompactTxStreamer` gRPC service from
+`wallet-testnet.wcashexplorer.com` to the node's loopback compact-block port.
+It does not expose authenticated JSON-RPC, PostgreSQL, or the explorer API.
+
+Create a DNS-only A record for the wallet hostname, issue its certificate with
+the existing ACME webroot, then install
+`deploy/nginx/wcash-wallet-rpc.conf`. Validate the live endpoint with
+`GetLightdInfo` and the exact Wcash Testnet genesis before compiling it into a
+wallet release.
 
 ### Bind and ingress
 
