@@ -94,9 +94,14 @@ Rust API. Keep preview mode disabled and preserve same-origin API URLs:
 cd web
 npm ci
 npm run lint
-WCASH_EXPLORER_STANDALONE=true npm run build
+npm run build:standalone
 test -f dist/standalone/server.js
+test -f dist/standalone/standalone-runtime.json
 ```
+
+The standalone build restores Vinext's lockfile-pinned external React peer and
+boots a copy from an isolated temporary directory. Do not publish an artifact
+if that automatic route smoke test fails.
 
 Copy the **contents** of `dist/standalone/` into a new, immutable release
 directory below `/opt/wcashexplorer-web/releases/`; the resulting layout must

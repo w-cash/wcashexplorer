@@ -66,9 +66,15 @@ For the documented single-host Testnet topology, build Vinext's self-contained
 Node artifact instead:
 
 ```sh
-WCASH_EXPLORER_STANDALONE=true npm run build
+npm run build:standalone
 test -f dist/standalone/server.js
+test -f dist/standalone/standalone-runtime.json
 ```
+
+`build:standalone` restores the lockfile-pinned React peer that Vinext leaves
+external, then boots the artifact from an isolated temporary directory and
+smoke-tests every explorer route. A successful build therefore cannot resolve
+packages from the source tree by accident.
 
 The default build remains the Cloudflare Worker artifact. Do not mix the two
 outputs in one release directory.
