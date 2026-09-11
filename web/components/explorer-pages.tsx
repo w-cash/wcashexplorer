@@ -601,7 +601,7 @@ function AuxPowDetail({ auxpow }: { auxpow: AuxPowEvidence }) {
             mono
           />
           <CompactRecord
-            label="Parent hash meets target"
+            label="Hash meets advertised parent target"
             value={auxpow.parentHashMeetsClaimedTarget ? 'Met' : 'Not met'}
           />
           <CompactRecord
@@ -609,7 +609,7 @@ function AuxPowDetail({ auxpow }: { auxpow: AuxPowEvidence }) {
             value={relativeTime(auxpow.verifiedAt)}
           />
         </ProofStage>
-        <ProofStage number="03" title="Zcash lookup">
+        <ProofStage number="03" title="Optional Zcash observation">
           <CompactRecord
             label="State"
             value={humanize(auxpow.parentLookupState)}
@@ -621,7 +621,9 @@ function AuxPowDetail({ auxpow }: { auxpow: AuxPowEvidence }) {
                 ? 'Yes'
                 : auxpow.parentLookupState === 'disagreement'
                   ? 'No — disagreement'
-                  : 'Agreement not established'
+                  : auxpow.parentLookupState === 'not_configured'
+                    ? 'Not applicable'
+                    : 'Agreement not established'
             }
           />
           <CompactRecord
@@ -671,11 +673,19 @@ function AuxPowDetail({ auxpow }: { auxpow: AuxPowEvidence }) {
         <div className="mt-5 flex flex-wrap gap-2">
           <ExternalEvidence
             href={auxpow.parentBlockUrl}
-            label="Open Zcash block"
+            label={
+              auxpow.parentLookupState === 'canonical'
+                ? 'Open observed Zcash block'
+                : 'Search Zcash parent hash'
+            }
           />
           <ExternalEvidence
             href={auxpow.parentCoinbaseTxUrl}
-            label="Open coinbase transaction"
+            label={
+              auxpow.parentLookupState === 'canonical'
+                ? 'Open observed coinbase'
+                : 'Search parent coinbase'
+            }
           />
         </div>
       </div>
@@ -684,7 +694,10 @@ function AuxPowDetail({ auxpow }: { auxpow: AuxPowEvidence }) {
         <div className="section-heading-row">
           <h3>Zcash source checks</h3>
         </div>
-        <ParentObservationTable observations={auxpow.observations} />
+        <ParentObservationTable
+          observations={auxpow.observations}
+          lookupState={auxpow.parentLookupState}
+        />
       </div>
     </div>
   );
@@ -692,12 +705,18 @@ function AuxPowDetail({ auxpow }: { auxpow: AuxPowEvidence }) {
 
 function ParentObservationTable({
   observations,
+  lookupState,
 }: {
   observations: ParentObservation[];
+  lookupState: string;
 }) {
   if (!observations.length) {
     return (
-      <p className="p-5 text-sm text-[var(--muted)]">No parent observations.</p>
+      <p className="p-5 text-sm text-[var(--muted)]">
+        {lookupState === 'not_configured'
+          ? 'Zcash observation is not configured. The Wcash AuxPoW proof remains independently verifiable from its on-chain witness.'
+          : 'No parent observations are available.'}
+      </p>
     );
   }
 

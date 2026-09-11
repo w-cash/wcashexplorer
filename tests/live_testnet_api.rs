@@ -57,10 +57,10 @@ async fn run_live_api_test() -> Result<()> {
     ensure!(block["data"]["hash"] == BLOCK_ONE_HASH);
     ensure!(block["data"]["reward"]["decimal"] == "6.25000000");
     ensure!(block["data"]["transactions"][0]["txid"] == BLOCK_ONE_TXID);
-    assert_auxpow(&block["data"]["auxpow"])?;
+    let parent_observed = assert_auxpow(&block["data"]["auxpow"])?;
 
     let auxpow = get_json(&client, base_url, "/api/v1/blocks/1/auxpow").await?;
-    assert_auxpow(&auxpow["data"])?;
+    ensure!(assert_auxpow(&auxpow["data"])? == parent_observed);
 
     let raw = get_json(&client, base_url, "/api/v1/blocks/1/raw").await?;
     ensure!(raw["data"]["blockHash"] == BLOCK_ONE_HASH);
@@ -195,10 +195,7 @@ async fn run_live_api_test() -> Result<()> {
         "auxpowBlocks",
         "locallyVerifiedBlocks",
         "parentTargetVerifiedBlocks",
-        "canonicalParentBlocks",
-        "parentQuorumAgreementBlocks",
         "bestChainWitnessBlocks",
-        "fullyVerifiedBlocks",
     ] {
         ensure!(
             json_u64(&merged["data"][field], field)? == eligible,
@@ -206,11 +203,35 @@ async fn run_live_api_test() -> Result<()> {
         );
     }
     ensure!(merged["data"]["anomalyBlocks"] == 0);
-    ensure!(
-        merged["data"]["observationSourceCount"]
-            .as_i64()
-            .is_some_and(|count| count >= 2)
-    );
+    if parent_observed {
+        for field in [
+            "canonicalParentBlocks",
+            "parentQuorumAgreementBlocks",
+            "fullyVerifiedBlocks",
+        ] {
+            ensure!(
+                json_u64(&merged["data"][field], field)? == eligible,
+                "unexpected {field}"
+            );
+        }
+        ensure!(merged["data"]["locallyVerifiedWithoutParentObservationBlocks"] == 0);
+        ensure!(
+            merged["data"]["observationSourceCount"]
+                .as_i64()
+                .is_some_and(|count| count >= 2)
+        );
+    } else {
+        ensure!(merged["data"]["canonicalParentBlocks"] == 0);
+        ensure!(merged["data"]["parentQuorumAgreementBlocks"] == 0);
+        ensure!(merged["data"]["fullyVerifiedBlocks"] == 0);
+        ensure!(
+            json_u64(
+                &merged["data"]["locallyVerifiedWithoutParentObservationBlocks"],
+                "locally verified without parent observation blocks"
+            )? == eligible
+        );
+        ensure!(merged["data"]["observationSourceCount"] == 0);
+    }
 
     let rich_list = get_json(&client, base_url, "/api/v1/addresses/rich-list").await?;
     let funded_addresses = json_u64(
@@ -336,23 +357,32 @@ fn assert_complete_history(points: &[Value], as_of_height: u64, limit: usize) ->
     Ok(())
 }
 
-fn assert_auxpow(auxpow: &Value) -> Result<()> {
+fn assert_auxpow(auxpow: &Value) -> Result<bool> {
     ensure!(auxpow["localValidationState"] == "auxpow_verified");
     ensure!(auxpow["exactWitnessState"] == "best_chain");
     ensure!(auxpow["parentHashMeetsClaimedTarget"] == true);
     ensure!(auxpow["parentBlockHash"] == PARENT_BLOCK_HASH);
     ensure!(auxpow["parentCoinbaseTxid"] == PARENT_COINBASE_TXID);
-    ensure!(auxpow["parentLookupState"] == "canonical");
-    ensure!(auxpow["parentSourcesAgree"] == true);
     let observations = auxpow["observations"]
         .as_array()
         .context("AuxPoW observations are missing")?;
-    ensure!(observations.len() >= 2);
-    ensure!(observations.iter().all(|observation| {
-        observation["observationState"] == "canonical"
-            && observation["embeddedHeaderMatches"] == true
-    }));
-    Ok(())
+    match auxpow["parentLookupState"].as_str() {
+        Some("canonical") => {
+            ensure!(auxpow["parentSourcesAgree"] == true);
+            ensure!(observations.len() >= 2);
+            ensure!(observations.iter().all(|observation| {
+                observation["observationState"] == "canonical"
+                    && observation["embeddedHeaderMatches"] == true
+            }));
+            Ok(true)
+        }
+        Some("not_configured") => {
+            ensure!(auxpow["parentSourcesAgree"] == false);
+            ensure!(observations.is_empty());
+            Ok(false)
+        }
+        state => anyhow::bail!("unexpected parent observation state: {state:?}"),
+    }
 }
 
 async fn get_json(client: &Client, base_url: &str, path: &str) -> Result<Value> {

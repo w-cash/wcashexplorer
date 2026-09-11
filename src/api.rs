@@ -364,7 +364,7 @@ async fn raw_block(
 ) -> Result<Json<ApiEnvelope<RawBlockView>>> {
     let chain = chain_state(&state).await?;
     let row = find_block(&state, &id).await?;
-    let raw: Vec<u8> = sqlx::query_scalar(
+    let raw_block_bytes: Vec<u8> = sqlx::query_scalar(
         "SELECT raw_block FROM block_witnesses WHERE block_hash = $1 AND witness_hash = $2",
     )
     .bind(&row.summary.hash)
@@ -375,7 +375,7 @@ async fn raw_block(
         block_hash: row.summary.hash,
         witness_hash: row.summary.witness_hash,
         encoding: "hex".to_owned(),
-        data: hex::encode(raw),
+        data: hex::encode(raw_block_bytes),
     };
     Ok(Json(envelope(&state, data, None, &chain)))
 }
@@ -1241,7 +1241,7 @@ fn openapi_schemas() -> Value {
             },
             "MergeMiningStats": {
                 "type": "object", "additionalProperties": false,
-                "required": ["asOfHeight", "asOfHash", "eligibleChildBlocks", "auxpowBlocks", "locallyVerifiedBlocks", "parentTargetVerifiedBlocks", "canonicalParentBlocks", "orphanedParentBlocks", "notFoundParentBlocks", "unavailableParentBlocks", "disagreementParentBlocks", "parentQuorumAgreementBlocks", "bestChainWitnessBlocks", "fullyVerifiedBlocks", "anomalyBlocks", "observationSourceCount", "lastVerifiedAt", "scopeNotice"],
+                "required": ["asOfHeight", "asOfHash", "eligibleChildBlocks", "auxpowBlocks", "locallyVerifiedBlocks", "parentTargetVerifiedBlocks", "canonicalParentBlocks", "orphanedParentBlocks", "notFoundParentBlocks", "unavailableParentBlocks", "disagreementParentBlocks", "parentQuorumAgreementBlocks", "bestChainWitnessBlocks", "fullyVerifiedBlocks", "locallyVerifiedWithoutParentObservationBlocks", "anomalyBlocks", "observationSourceCount", "lastVerifiedAt", "scopeNotice"],
                 "properties": {
                     "asOfHeight": nullable(json!({"type": "integer", "format": "int64", "minimum": 0})),
                     "asOfHash": nullable_ref("Hash"),
@@ -1249,15 +1249,16 @@ fn openapi_schemas() -> Value {
                     "auxpowBlocks": {"type": "integer", "format": "int64", "minimum": 0},
                     "locallyVerifiedBlocks": {"type": "integer", "format": "int64", "minimum": 0},
                     "parentTargetVerifiedBlocks": {"type": "integer", "format": "int64", "minimum": 0},
-                    "canonicalParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "canonicalParentBlocks": {"type": "integer", "format": "int64", "minimum": 0, "description": "Blocks whose embedded parent was observed as canonical by at least one configured Zcash source."},
                     "orphanedParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
                     "notFoundParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
                     "unavailableParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
-                    "disagreementParentBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "disagreementParentBlocks": {"type": "integer", "format": "int64", "minimum": 0, "description": "Blocks whose configured Zcash observations do not establish source agreement. Blocks with no configured observer are excluded."},
                     "parentQuorumAgreementBlocks": {"type": "integer", "format": "int64", "minimum": 0},
                     "bestChainWitnessBlocks": {"type": "integer", "format": "int64", "minimum": 0},
-                    "fullyVerifiedBlocks": {"type": "integer", "format": "int64", "minimum": 0},
-                    "anomalyBlocks": {"type": "integer", "format": "int64", "minimum": 0},
+                    "fullyVerifiedBlocks": {"type": "integer", "format": "int64", "minimum": 0, "description": "Blocks with valid Wcash evidence plus agreeing canonical Zcash-parent observations."},
+                    "locallyVerifiedWithoutParentObservationBlocks": {"type": "integer", "format": "int64", "minimum": 0, "description": "Blocks with valid Wcash AuxPoW and exact best-chain witness evidence when no Zcash observer is configured."},
+                    "anomalyBlocks": {"type": "integer", "format": "int64", "minimum": 0, "description": "Eligible blocks missing valid Wcash evidence or complete configured-parent evidence. Locally valid blocks with parent observation not configured are excluded."},
                     "observationSourceCount": {"type": "integer", "format": "int64", "minimum": 0},
                     "lastVerifiedAt": nullable_ref("DateTime"),
                     "scopeNotice": {"type": "string"}
@@ -1696,7 +1697,7 @@ async fn load_auxpow(
         parent_block_url,
         parent_coinbase_tx_url,
         observations,
-        meaning: "AuxPoW validity is verified locally. Parent status is reported by configured Zcash nodes.".to_owned(),
+        meaning: "AuxPoW validity and exact Wcash best-chain acceptance are verified locally. Zcash canonical-parent observation is an optional, separate status.".to_owned(),
     }))
 }
 

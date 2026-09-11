@@ -516,8 +516,64 @@ async fn exercise_analytics(database_url: &str) -> Result<()> {
             "unexpected merge-mining count for {field}"
         );
     }
+    ensure!(merge["locallyVerifiedWithoutParentObservationBlocks"] == 0);
     ensure!(merge["observationSourceCount"] == 2);
     ensure!(merge["anomalyBlocks"] == 0);
+
+    let mut incomplete_parent_quorum = new_two.clone();
+    let incomplete_auxpow = incomplete_parent_quorum
+        .auxpow
+        .as_mut()
+        .expect("fixture AuxPoW");
+    incomplete_auxpow.parent_observations.truncate(1);
+    incomplete_auxpow.parent_sources_agree = false;
+    database
+        .refresh_block_evidence("testnet", &incomplete_parent_quorum)
+        .await?;
+    let incomplete_merge = get_json(&app, "/api/v1/merge-mining/stats").await?;
+    ensure!(incomplete_merge["data"]["fullyVerifiedBlocks"] == 1);
+    ensure!(incomplete_merge["data"]["disagreementParentBlocks"] == 1);
+    ensure!(incomplete_merge["data"]["anomalyBlocks"] == 1);
+
+    for observed_block in [&block_one, &new_two] {
+        let mut without_parent_observation = observed_block.clone();
+        let auxpow = without_parent_observation
+            .auxpow
+            .as_mut()
+            .expect("fixture AuxPoW");
+        auxpow.parent_observations.clear();
+        auxpow.parent_lookup_state = ParentLookupState::NotConfigured;
+        auxpow.parent_sources_agree = false;
+        database
+            .refresh_block_evidence("testnet", &without_parent_observation)
+            .await?;
+    }
+
+    let wcash_only_merge = get_json(&app, "/api/v1/merge-mining/stats").await?;
+    let wcash_only_merge = &wcash_only_merge["data"];
+    ensure!(wcash_only_merge["eligibleChildBlocks"] == 2);
+    ensure!(wcash_only_merge["locallyVerifiedBlocks"] == 2);
+    ensure!(wcash_only_merge["bestChainWitnessBlocks"] == 2);
+    ensure!(wcash_only_merge["fullyVerifiedBlocks"] == 0);
+    ensure!(wcash_only_merge["canonicalParentBlocks"] == 0);
+    ensure!(wcash_only_merge["locallyVerifiedWithoutParentObservationBlocks"] == 2);
+    ensure!(wcash_only_merge["observationSourceCount"] == 0);
+    ensure!(wcash_only_merge["disagreementParentBlocks"] == 0);
+    ensure!(wcash_only_merge["anomalyBlocks"] == 0);
+
+    let wcash_only_auxpow = get_json(
+        &app,
+        &format!("/api/v1/blocks/{}/auxpow", new_two.block.hash),
+    )
+    .await?;
+    ensure!(wcash_only_auxpow["data"]["localValidationState"] == "auxpow_verified");
+    ensure!(wcash_only_auxpow["data"]["exactWitnessState"] == "best_chain");
+    ensure!(wcash_only_auxpow["data"]["parentLookupState"] == "not_configured");
+    ensure!(wcash_only_auxpow["data"]["observations"] == json!([]));
+
+    let wcash_only_ready = get_json(&app, "/health/ready").await?;
+    ensure!(wcash_only_ready["status"] == "ready");
+    ensure!(wcash_only_ready["indexedHeight"] == 2);
 
     let reorgs = get_json(&app, "/api/v1/reorgs").await?;
     let reorg = reorgs["data"]

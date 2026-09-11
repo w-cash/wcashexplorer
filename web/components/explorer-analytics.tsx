@@ -60,8 +60,8 @@ export function MergeMiningAnalytics() {
         <div className="space-y-4">
           <div className="analytics-summary-grid">
             <Metric
-              label="Fully verified"
-              value={`${stats.fullyVerifiedBlocks} / ${stats.eligibleChildBlocks}`}
+              label="Wcash AuxPoW valid"
+              value={`${stats.locallyVerifiedBlocks} / ${stats.eligibleChildBlocks}`}
             />
             <Metric
               label="Best-chain witnesses"
@@ -70,6 +70,10 @@ export function MergeMiningAnalytics() {
             <Metric
               label="Canonical Zcash parents"
               value={stats.canonicalParentBlocks.toLocaleString()}
+            />
+            <Metric
+              label="Wcash-only verification"
+              value={stats.locallyVerifiedWithoutParentObservationBlocks.toLocaleString()}
             />
             <Metric
               label="Configured parent sources"
@@ -95,7 +99,11 @@ export function MergeMiningAnalytics() {
             <div>
               <strong>
                 {stats.anomalyBlocks === 0
-                  ? 'Every eligible canonical block is fully verified'
+                  ? stats.eligibleChildBlocks === 0
+                    ? 'No AuxPoW blocks indexed yet'
+                    : stats.fullyVerifiedBlocks === stats.eligibleChildBlocks
+                      ? 'Every eligible block has complete Wcash and Zcash evidence'
+                      : 'Every eligible block passes Wcash AuxPoW validation'
                   : `${stats.anomalyBlocks} canonical block${stats.anomalyBlocks === 1 ? '' : 's'} need attention`}
               </strong>
               <p>
@@ -109,7 +117,7 @@ export function MergeMiningAnalytics() {
           {stats.anomalyBlocks > 0 ? (
             <div className="anomaly-breakdown">
               <Metric
-                label="Parent disagreement"
+                label="Parent quorum incomplete"
                 value={stats.disagreementParentBlocks.toLocaleString()}
               />
               <Metric
@@ -189,14 +197,12 @@ export function NetworkAnalytics() {
       x: point.height,
       label: `Block #${point.height.toLocaleString()}`,
       values: {
-        transparent:
-          point.transparent.reported
-            ? amountValue(point.transparent.chainValue)
-            : null,
-        ironwood:
-          point.ironwood.reported
-            ? amountValue(point.ironwood.chainValue)
-            : null,
+        transparent: point.transparent.reported
+          ? amountValue(point.transparent.chainValue)
+          : null,
+        ironwood: point.ironwood.reported
+          ? amountValue(point.ironwood.chainValue)
+          : null,
       },
     })) ?? [];
   const latestPools = poolHistory?.points.at(-1);

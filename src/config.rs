@@ -145,11 +145,7 @@ impl Config {
                 "configured Zcash parent RPC endpoints must be distinct".to_owned(),
             ));
         }
-        if run_indexer && require_parent_quorum && zcash_rpcs.len() < 2 {
-            return Err(ExplorerError::Config(
-                "RUN_INDEXER requires two distinct Zcash Testnet RPC endpoints when REQUIRE_PARENT_QUORUM is enabled".to_owned(),
-            ));
-        }
+        validate_parent_configuration(run_indexer, require_parent_quorum, zcash_rpcs.len())?;
         let parent_genesis_hash = env_or(
             "ZCASH_PARENT_GENESIS_HASH",
             "05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38",
@@ -275,4 +271,30 @@ fn validate_hex_id(name: &str, value: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn validate_parent_configuration(
+    run_indexer: bool,
+    require_parent_quorum: bool,
+    parent_count: usize,
+) -> Result<()> {
+    if run_indexer && require_parent_quorum && parent_count < 2 {
+        return Err(ExplorerError::Config(
+            "RUN_INDEXER requires two distinct Zcash Testnet RPC endpoints when REQUIRE_PARENT_QUORUM is enabled".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wcash_only_indexing_is_allowed_only_when_parent_quorum_is_optional() {
+        assert!(validate_parent_configuration(true, false, 0).is_ok());
+        assert!(validate_parent_configuration(true, true, 0).is_err());
+        assert!(validate_parent_configuration(true, true, 1).is_err());
+        assert!(validate_parent_configuration(true, true, 2).is_ok());
+    }
 }

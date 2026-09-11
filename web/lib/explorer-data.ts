@@ -264,6 +264,7 @@ export type MergeMiningStats = {
   parentQuorumAgreementBlocks: number;
   bestChainWitnessBlocks: number;
   fullyVerifiedBlocks: number;
+  locallyVerifiedWithoutParentObservationBlocks: number;
   anomalyBlocks: number;
   observationSourceCount: number;
   lastVerifiedAt: string | null;
