@@ -1,12 +1,14 @@
 # WcashExplorer
 
 WcashExplorer is a read-only block explorer for **Wcash Testnet**. It combines a
-Rust indexer and HTTP API with a responsive web interface, and records the
-evidence that links a Wcash AuxPoW block to its Zcash Testnet parent block.
+Rust indexer and HTTP API with a responsive web interface, independently
+validates each on-chain Wcash AuxPoW witness, and can optionally record
+observations of the corresponding Zcash Testnet parent block.
 
-This repository is under active development. It has not been deployed publicly,
-and it is not a statement that Wcash mainnet is ready. Testnet coins (`TWC`)
-have no monetary value.
+The public Testnet explorer is
+[testnet.wcashexplorer.com](https://testnet.wcashexplorer.com). This repository
+is under active development, and the Testnet deployment is not a statement that
+Wcash mainnet is ready. Testnet coins (`TWC`) have no monetary value.
 
 ## What it provides
 
@@ -16,8 +18,8 @@ have no monetary value.
 - aggregate public value-pool data and shielded action counts;
 - reorganization-aware indexing and recorded reorg events;
 - raw block retrieval and exact AuxPoW witness identity;
-- local AuxPoW verification, Wcash witness acceptance, and observations from
-  configured Zcash Testnet RPC nodes;
+- local AuxPoW verification and exact Wcash witness acceptance;
+- optional observations from configured Zcash Testnet RPC nodes;
 - liveness and strict readiness endpoints for operators.
 
 The explorer does **not** reveal shielded senders, recipients, note values,
@@ -33,10 +35,13 @@ Merge-mining evidence is intentionally split into distinct claims:
 2. **Exact Wcash witness state** asks the Wcash node about the exact block hash
    and solution bytes; a non-genesis block is indexed only when that witness is
    reported as `best_chain`.
-3. **Parent-chain observation** checks the embedded parent header and exact
-   parent hash against each configured Zcash Testnet node. Agreement means those
-   configured observations agree; it does not imply that the node operators are
-   independent or that the explorer is a consensus oracle.
+3. **Optional parent-chain observation** checks the embedded parent header and
+   exact parent hash against each configured Zcash Testnet node. When no parent
+   observer is configured, the API reports this layer as `not_configured`; that
+   does not invalidate the independently verified on-chain Wcash proof.
+   Agreement means only that the configured observations agree. It does not
+   imply that the node operators are independent or that the explorer is a
+   consensus oracle.
 
 These states can change independently as either chain reorganizes or an RPC
 source becomes unavailable. Recent evidence is refreshed without rewriting the
@@ -57,12 +62,13 @@ docs/           Architecture, privacy, and deployment documentation
 - Rust 1.88 or newer;
 - PostgreSQL 17 (the development Compose file supplies it);
 - Node.js 22.13 or newer for the web interface;
-- one Wcash Testnet RPC endpoint;
-- two distinct Zcash Testnet RPC endpoints for the default parent-observation
-  quorum policy.
+- one Wcash Testnet RPC endpoint; and
+- optionally, two distinct Zcash Testnet RPC endpoints for strict
+  parent-observation quorum.
 
-The RPC services must be fully synchronized to the expected networks. Keep all
-node RPC listeners private and authenticated.
+The Wcash RPC service, and any optional parent RPC services, must be fully
+synchronized to their expected networks. Keep every node RPC listener private
+and authenticated.
 
 ## Local development
 
@@ -94,9 +100,12 @@ npm ci
 EXPLORER_DEV_API_PROXY=http://127.0.0.1:8080 npm run dev
 ```
 
-The example configuration is pinned to the current Wcash Testnet and Zcash
-Testnet genesis hashes. Startup fails if the configured chain identity or the
-database's stored network identity differs.
+The development example enables the stricter two-parent observer profile. The
+lean public-Testnet deployment profile is documented in
+[`docs/live-testnet-runbook.md`](docs/live-testnet-runbook.md) and requires only
+one Wcash node. Both profiles are pinned to the expected chain identities;
+startup fails if a configured chain identity or the database's stored network
+identity differs.
 
 ## Validation
 
@@ -140,9 +149,12 @@ excluded from public search, balances, histories, and rankings.
 
 Operational probes are available at `GET /health/live` and
 `GET /health/ready`. Readiness requires a fresh heartbeat, a valid canonical
-tip, and at most one block of indexing lag. When `REQUIRE_PARENT_QUORUM=true`,
-every non-genesis tip also requires fresh, agreeing canonical evidence from at
-least two parent sources. The tip is prioritized for evidence refresh after 30
+tip, and at most one block of indexing lag. With the Wcash-only profile,
+`REQUIRE_PARENT_QUORUM=false` and no Zcash parent RPC is configured, so
+readiness depends only on Wcash chain and indexer state; parent observation is
+reported as `not_configured`. When `REQUIRE_PARENT_QUORUM=true`, every
+non-genesis tip also requires fresh, agreeing canonical evidence from at least
+two parent sources. The tip is prioritized for evidence refresh after 30
 seconds; readiness allows one missed refresh and fails once that evidence is
 older than 60 seconds. Historical indexing continues while the strict probe is
 unready.

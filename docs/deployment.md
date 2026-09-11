@@ -1,12 +1,13 @@
 # Deployment Guide
 
-This guide describes a private Wcash Testnet deployment for evaluation. The
-repository has not yet been deployed publicly and is not approved for Wcash
-mainnet use.
+This guide describes the public Wcash Testnet explorer profile used at
+[testnet.wcashexplorer.com](https://testnet.wcashexplorer.com). It is not
+approved for Wcash mainnet use.
 
 ## Production-shaped topology
 
-Use separate failure and trust domains where practical:
+The primary Testnet profile keeps the explorer small and verifies the complete
+AuxPoW witness already committed to each Wcash block:
 
 ```text
 Internet
@@ -17,24 +18,30 @@ TLS / rate-limiting reverse proxy
    └── /api/*   -> WcashExplorer Rust API
                          │
                          ├── PostgreSQL (private)
-                         ├── Wcash Testnet RPC (private)
-                         ├── Zcash Testnet RPC A (private)
-                         └── Zcash Testnet RPC B (private)
+                         └── Wcash Testnet RPC (private)
 ```
 
-The two parent RPC URLs must be distinct. For stronger operational evidence,
-run them under separate operators, hosts, and network paths. The application can
-detect agreement between configured observations, but cannot prove that the
-sources are independent.
+This profile validates the encoded child commitment, proof branches, parent
+header work, required Wcash target, and exact witness acceptance by the Wcash
+node. It reports Zcash canonical-chain observation as `not_configured`; it does
+not claim that the embedded parent block was observed on Zcash Testnet.
+
+An optional strict parent-observer profile adds two private Zcash Testnet RPC
+nodes. Its two parent RPC URLs must be distinct. For stronger operational
+evidence, run them under separate operators, hosts, and network paths. The
+application can detect agreement between configured observations, but cannot
+prove that the sources are independent.
 
 ## Prerequisites
 
 - a synchronized Wcash Testnet node with authenticated RPC;
-- two synchronized Zcash Testnet nodes with authenticated RPC;
 - PostgreSQL 14 or newer with durable storage and backups;
 - a host or container runtime for the Rust service;
 - Node.js 22.13 or newer to build the web interface; and
 - a TLS reverse proxy or ingress with request and connection limits.
+
+The optional strict profile additionally requires two synchronized Zcash
+Testnet nodes with authenticated RPC.
 
 Do not expose node RPC, PostgreSQL, cookie files, or management ports to the
 public internet.
@@ -84,22 +91,28 @@ identify exactly which pair is running.
 
 ## Configuration
 
-Start from `.env.example` for a native process or `.env.docker.example` for the
-development Compose topology. Store the resulting environment outside source
-control.
+For the primary single-host Testnet profile, start from
+`deploy/testnet-wcash-only.env.example` and store the resulting environment
+outside source control. The development and strict parent-observer profiles use
+`.env.example`, `.env.docker.example`, or `deploy/testnet.env.example`.
 
 Required connections:
 
 - `DATABASE_URL`
 - `WCASH_RPC_URL` plus cookie or basic-auth fields
-- `ZCASH_RPC_URL` plus cookie or basic-auth fields
-- `ZCASH_RPC_SECONDARY_URL` plus cookie or basic-auth fields
+
+For the optional strict profile, also configure:
+
+- `ZCASH_RPC_URL` plus cookie or basic-auth fields; and
+- `ZCASH_RPC_SECONDARY_URL` plus cookie or basic-auth fields.
 
 Important identity and policy fields:
 
 - `WCASH_NETWORK`, `WCASH_GENESIS_HASH`, and display/monetary parameters;
-- `ZCASH_PARENT_CHAIN` and `ZCASH_PARENT_GENESIS_HASH`;
-- `REQUIRE_PARENT_QUORUM=true` for the intended testnet configuration;
+- `ZCASH_PARENT_CHAIN` and `ZCASH_PARENT_GENESIS_HASH`, which identify the
+  parent chain even when no observer is configured;
+- `REQUIRE_PARENT_QUORUM=false` for the primary Wcash-only profile, or `true`
+  for the strict two-parent profile;
 - `MAX_REORG_DEPTH` and `EVIDENCE_REFRESH_DEPTH`; and
 - `RUN_MIGRATIONS` and `RUN_INDEXER`.
 
@@ -109,8 +122,31 @@ maximum issuance schedule. They are validated at startup. Do not copy these
 values into a mainnet deployment without a separate release and review.
 
 The concrete single-host Testnet procedure and hardened systemd unit are in
-[`live-testnet-runbook.md`](live-testnet-runbook.md). The public production
-topology above remains the target for the domain deployment.
+[`live-testnet-runbook.md`](live-testnet-runbook.md).
+
+### Checked-in single-host profile
+
+The primary profile is assembled from these reviewed templates:
+
+- `deploy/testnet-wcash-only.env.example`: Wcash-only explorer environment;
+- `deploy/wcash-testnet-explorer-node.toml.example`: private Wcash observer node;
+- `deploy/systemd/wcashexplorer-start-wcash-only`: credential-loading launcher;
+- `deploy/systemd/wcashexplorer-testnet-wcash-only.service`: indexer/API unit;
+- `deploy/systemd/wcash-node-reconnect-delay.conf`: reconnect delay for the
+  single-seed bootstrap policy;
+- `deploy/systemd/wcashexplorer-web.service`: standalone web unit;
+- `deploy/nginx/wcashexplorer.conf`: same-origin web/API reverse proxy for
+  `testnet.wcashexplorer.com`;
+- `deploy/nginx/cloudflare-real-ip.conf`: Cloudflare client-IP restoration for
+  rate limiting; and
+- `deploy/ssh/00-wcashexplorer-hardening.conf`: key-only SSH baseline.
+
+The documentation-only Wcash seed in the node template must be replaced with an
+operator-approved Testnet seed. Never commit the seed host if infrastructure
+policy treats it as private. The older `deploy/testnet.env.example`,
+`deploy/systemd/wcashexplorer-start`, and
+`deploy/systemd/wcashexplorer-testnet.service` files implement the optional
+strict two-parent profile.
 
 ### RPC authentication
 
@@ -166,15 +202,19 @@ upstream pruning or configuration changes.
 
 Start dependencies in this order:
 
-1. synchronized Wcash and both Zcash Testnet RPC nodes;
+1. the synchronized Wcash Testnet RPC node;
 2. PostgreSQL;
 3. database migration job, if separated;
 4. one Rust indexer/API process;
 5. optional read-only API replicas; and
 6. web interface and public ingress.
 
-The service validates Wcash and Zcash chain identity before indexing. Do not
-route public traffic merely because `/health/live` succeeds.
+Start both Zcash Testnet RPC nodes before the indexer only when deploying the
+optional strict parent-observer profile.
+
+The service always validates Wcash chain identity before indexing. It also
+validates every configured Zcash observer's chain identity. Do not route public
+traffic merely because `/health/live` succeeds.
 
 Use:
 
@@ -182,38 +222,43 @@ Use:
 - `/health/ready` for traffic readiness.
 
 Readiness requires a fresh indexer heartbeat, a valid canonical tip, and no
-more than one block of lag. With `REQUIRE_PARENT_QUORUM=true`, every
-non-genesis canonical tip must also have at least two fresh parent observations;
-all must be canonical, agree, and match the embedded parent header. The indexer
-prioritizes the tip for refresh after 30 seconds, and the readiness budget is 60
-seconds so one missed refresh does not flap traffic. Parent uncertainty makes
-the strict probe fail but does not stop local Wcash indexing. Remove an instance
-from service immediately when readiness fails; historical API reads remain
-available for diagnosis.
+more than one block of lag. In the primary Wcash-only profile,
+`REQUIRE_PARENT_QUORUM=false`; readiness does not depend on an external parent
+observer and parent observation remains `not_configured`. With
+`REQUIRE_PARENT_QUORUM=true`, every non-genesis canonical tip must also have at
+least two fresh parent observations; all must be canonical, agree, and match the
+embedded parent header. The indexer prioritizes the tip for refresh after 30
+seconds, and the readiness budget is 60 seconds so one missed refresh does not
+flap traffic. Parent uncertainty makes the strict probe fail but does not stop
+local Wcash indexing. Remove an instance from service immediately when
+readiness fails; historical API reads remain available for diagnosis.
 
 ## Verification before ASIC or public test traffic
 
 Before announcing the explorer:
 
-1. confirm all three RPC endpoints report the expected test networks and genesis
-   blocks;
+1. confirm the Wcash RPC endpoint reports the expected test network and genesis
+   block;
 2. index from genesis into an empty database;
 3. compare tip height and hash with the Wcash node;
 4. inspect a known AuxPoW block and confirm:
    - local state is `auxpow_verified`;
    - exact witness state is `best_chain`;
    - the parent hash and parent coinbase ID match the proof;
-   - every configured parent observation reports an exact header match; and
-   - parent observation timestamps are fresh;
+   - parent lookup is `not_configured` and no canonical-parent claim is shown;
 5. exercise block, transaction, transparent-address, raw-block, AuxPoW, search,
    and pagination routes;
 6. test a Wcash reorganization in an isolated environment and verify readers
    never observe a partially replaced branch;
-7. stop one parent node and verify the explorer reports uncertainty rather than
-   retaining a misleading agreement state;
-8. restart PostgreSQL and verify the writer exits on lease loss and recovers only
+7. restart PostgreSQL and verify the writer exits on lease loss and recovers only
    through the supervisor; and
-9. run the Rust and web validation commands from the README.
+8. run the Rust and web validation commands from the README.
+
+For the optional strict parent-observer profile, additionally confirm both
+Zcash RPC endpoints report the expected parent network and genesis, every
+configured observation has an exact embedded-header match and fresh timestamp,
+and stopping one parent node changes the result to uncertainty rather than
+retaining a misleading agreement state.
 
 A successful local fixture test does not replace these live testnet checks.
 
@@ -227,7 +272,8 @@ Collect at least:
 - indexer restarts and writer-lock failures;
 - reorg depth and duration;
 - RPC latency, timeouts, and bounded-response failures per source;
-- parent observation state, header-match result, and age; and
+- parent observation state, header-match result, and age when parent observers
+  are configured; and
 - PostgreSQL capacity, replication, backup, and statement-timeout events.
 
 Do not put RPC credentials, cookies, full authorization headers, private
@@ -240,8 +286,10 @@ hostnames, or database URLs into logs or metrics labels.
   documented recovery procedure.
 - **Indexer failure:** keep public traffic off the instance, resolve the RPC or
   database fault, then restart one writer. Do not bypass the advisory lock.
-- **Parent disagreement:** preserve the evidence, remove any unqualified
-  “verified” presentation, investigate the sources, and wait for convergence.
+- **Parent disagreement (optional observer profile):** preserve the evidence,
+  remove any unqualified parent-canonical presentation, investigate the sources,
+  and wait for convergence. Local Wcash AuxPoW validity remains a separate
+  claim.
 - **Database loss:** restore a tested backup, validate network identity, and
   reindex forward while readiness remains disabled.
 - **Unexpected deep reorg:** stop indexing and investigate. Raising
@@ -249,8 +297,9 @@ hostnames, or database URLs into logs or metrics labels.
 
 ## Current release boundary
 
-This repository currently targets a Wcash Testnet explorer. Domain configuration,
-public TLS, production retention policy, independent parent-source operations,
-load testing, disaster-recovery rehearsal, and a mainnet release review remain
-deployment work. Do not describe the source tree alone as a live explorer or a
-mainnet-ready service.
+This repository currently targets the public Wcash Testnet explorer at
+[testnet.wcashexplorer.com](https://testnet.wcashexplorer.com). Production
+retention policy, optional independent parent-source operations, load testing,
+disaster-recovery rehearsal, and a separate mainnet release review remain
+deployment work. Do not describe the Testnet service or source tree as a
+mainnet-ready explorer.

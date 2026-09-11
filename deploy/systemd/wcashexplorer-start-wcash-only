@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+credentials_dir=${CREDENTIALS_DIRECTORY:?systemd credential directory is unavailable}
+if [ ! -r "${credentials_dir}/wcash_rpc" ]; then
+    echo "required RPC credential is unavailable: wcash_rpc" >&2
+    exit 1
+fi
+
+export WCASH_RPC_COOKIE_FILE="${credentials_dir}/wcash_rpc"
+
+exec /opt/wcashexplorer/bin/wcashexplorer
