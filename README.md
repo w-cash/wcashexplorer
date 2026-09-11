@@ -139,7 +139,12 @@ excluded from public search, balances, histories, and rankings.
 
 Operational probes are available at `GET /health/live` and
 `GET /health/ready`. Readiness requires a fresh heartbeat, a valid canonical
-tip, and at most one block of indexing lag.
+tip, and at most one block of indexing lag. When `REQUIRE_PARENT_QUORUM=true`,
+every non-genesis tip also requires fresh, agreeing canonical evidence from at
+least two parent sources. The tip is prioritized for evidence refresh after 30
+seconds; readiness allows one missed refresh and fails once that evidence is
+older than 60 seconds. Historical indexing continues while the strict probe is
+unready.
 
 ## Storage
 

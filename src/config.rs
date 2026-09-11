@@ -4,6 +4,12 @@ use url::Url;
 
 use crate::error::{ExplorerError, Result};
 
+/// Canonical parent evidence is refreshed at least this often for the Wcash tip.
+pub const PARENT_EVIDENCE_REFRESH_INTERVAL_SECONDS: i64 = 30;
+
+/// Strict readiness tolerates one missed tip refresh before becoming unavailable.
+pub const PARENT_EVIDENCE_MAX_AGE_SECONDS: i64 = PARENT_EVIDENCE_REFRESH_INTERVAL_SECONDS * 2;
+
 /// Runtime configuration sourced from environment variables.
 #[derive(Clone, Debug)]
 pub struct Config {

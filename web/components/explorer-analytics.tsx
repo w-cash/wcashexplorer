@@ -72,7 +72,7 @@ export function MergeMiningAnalytics() {
               value={stats.canonicalParentBlocks.toLocaleString()}
             />
             <Metric
-              label="Independent parent sources"
+              label="Configured parent sources"
               value={stats.observationSourceCount.toLocaleString()}
             />
             <Metric
@@ -410,6 +410,7 @@ export function AddressesPage() {
 }
 
 export function AddressBalanceChart({ address }: { address: AddressDetail }) {
+  const activityTruncated = address.transactionCount > address.activity.length;
   const points: ChartPoint[] = [...address.activity]
     .sort(
       (left, right) =>
@@ -424,7 +425,11 @@ export function AddressBalanceChart({ address }: { address: AddressDetail }) {
   return (
     <ExplorerLineChart
       title="Transparent balance history"
-      description="Running balance after each canonical transparent transaction involving this address. Shielded activity is outside this view."
+      description={`Running balance after each canonical transparent transaction involving this address. Shielded activity is outside this view.${
+        activityTruncated
+          ? ` The chart contains the latest ${address.activity.length.toLocaleString()} of ${address.transactionCount.toLocaleString()} transactions.`
+          : ''
+      }`}
       points={points}
       series={[{ key: 'balance', label: 'Balance', color: 'var(--brand)' }]}
     />

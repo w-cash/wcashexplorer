@@ -160,10 +160,10 @@ export function BlockPage({ id }: { id: string }) {
     const controller = new AbortController();
     void loadBlock(id, controller.signal).then(
       (envelope) => setResource({ envelope, error: '', loading: false }),
-      () =>
+      (error) =>
         setResource({
           envelope: null,
-          error: `Block ${id} was not found in the indexed canonical chain.`,
+          error: blockLoadError(error, id),
           loading: false,
         }),
     );
@@ -200,10 +200,10 @@ export function TransactionPage({
     const controller = new AbortController();
     void loadTransaction(txid, blockHash, controller.signal).then(
       (envelope) => setResource({ envelope, error: '', loading: false }),
-      () =>
+      (error) =>
         setResource({
           envelope: null,
-          error: 'That transaction was not found on the canonical chain.',
+          error: transactionLoadError(error),
           loading: false,
         }),
     );
@@ -239,7 +239,9 @@ export function AddressPage({ address }: { address: string }) {
           error:
             error instanceof ExplorerApiError && error.status === 400
               ? 'That is not a valid Wcash transparent address for this network.'
-              : 'That transparent address was not found on the canonical chain.',
+              : error instanceof ExplorerApiError && error.status === 404
+                ? 'That transparent address was not found on the canonical chain.'
+                : 'Transparent-address data is temporarily unavailable.',
           loading: false,
         }),
     );
@@ -264,13 +266,14 @@ export function AddressPage({ address }: { address: string }) {
 export function MergeMiningPage() {
   const [resource, setResource] =
     useState<Resource<BlockSummary[]>>(emptyResource);
+  const [cursor, setCursor] = useState<string>();
 
   useEffect(() => {
     const controller = new AbortController();
-    void loadBlocks(undefined, controller.signal).then(
+    void loadBlocks(cursor, controller.signal).then(
       (envelope) => setResource({ envelope, error: '', loading: false }),
       () => {
-        if (previewEnabled) {
+        if (previewEnabled && !cursor) {
           setResource({
             envelope: previewDashboard.blocks,
             error: '',
@@ -286,7 +289,7 @@ export function MergeMiningPage() {
       },
     );
     return () => controller.abort();
-  }, []);
+  }, [cursor]);
 
   const blocks = resource.envelope?.data ?? [];
 
@@ -297,6 +300,9 @@ export function MergeMiningPage() {
       description="Wcash AuxPoW validation and observations from configured Zcash nodes."
     >
       <MergeMiningAnalytics />
+      {previewEnabled && resource.envelope === previewDashboard.blocks ? (
+        <PreviewNotice />
+      ) : null}
       <section className="panel overflow-hidden">
         <SectionHeader title="Verification states" />
         <div className="definition-grid">
@@ -318,6 +324,14 @@ export function MergeMiningPage() {
         <SectionTitle>Recent canonical evidence</SectionTitle>
         <ResourceState loading={resource.loading} error={resource.error}>
           <BlockTable blocks={blocks} loading={false} />
+          <Pagination
+            canGoBack={Boolean(cursor)}
+            canGoForward={Boolean(resource.envelope?.meta.nextCursor)}
+            onBack={() => setCursor(undefined)}
+            onForward={() =>
+              setCursor(resource.envelope?.meta.nextCursor ?? undefined)
+            }
+          />
         </ResourceState>
       </section>
     </PageFrame>
@@ -761,7 +775,7 @@ function TransactionDetailView({
 }: {
   transaction: TransactionDetail;
 }) {
-  const shieldedActions = countShieldedActions(transaction);
+  const legacyShieldedActions = countLegacyShieldedActions(transaction);
 
   return (
     <div className="space-y-6">
@@ -819,8 +833,8 @@ function TransactionDetailView({
             mono
           />
           <Record
-            label="Shielded actions"
-            value={shieldedActions.toString()}
+            label="Ironwood actions"
+            value={transaction.ironwoodActionCount.toString()}
             mono
           />
           <Record
@@ -830,30 +844,23 @@ function TransactionDetailView({
         </dl>
       </section>
 
-      {shieldedActions > 0 ? (
+      {transaction.ironwoodActionCount > 0 ? (
         <PrivacyNotice text={transaction.privacyNotice} />
       ) : null}
 
-      <section>
-        <SectionTitle>Shielded structure</SectionTitle>
-        <div className="stats-strip">
-          <SummaryMetric
-            label="Sapling spends"
-            value={transaction.saplingSpendCount.toString()}
-          />
-          <SummaryMetric
-            label="Sapling outputs"
-            value={transaction.saplingOutputCount.toString()}
-          />
-          <SummaryMetric
-            label="Orchard actions"
-            value={transaction.orchardActionCount.toString()}
-          />
-          <SummaryMetric
+      {legacyShieldedActions > 0 ? (
+        <UnexpectedLegacyShieldedNotice count={legacyShieldedActions} />
+      ) : null}
+
+      <section className="panel overflow-hidden">
+        <SectionHeader title="Ironwood shielded structure" />
+        <dl className="record-grid p-4 sm:p-5">
+          <Record
             label="Ironwood actions"
             value={transaction.ironwoodActionCount.toString()}
+            mono
           />
-        </div>
+        </dl>
       </section>
 
       <section>
@@ -952,6 +959,8 @@ function TransactionDetailView({
 }
 
 function AddressDetailView({ address }: { address: AddressDetail }) {
+  const activityTruncated = address.transactionCount > address.activity.length;
+
   return (
     <div className="space-y-6">
       <PrivacyNotice text={address.scopeNotice} />
@@ -1050,6 +1059,13 @@ function AddressDetailView({ address }: { address: AddressDetail }) {
       <AddressBalanceChart address={address} />
       <section>
         <SectionTitle>Transparent activity</SectionTitle>
+        {activityTruncated ? (
+          <p className="mb-3 text-xs leading-5 text-[var(--muted)]">
+            Showing the latest {address.activity.length.toLocaleString()} of{' '}
+            {address.transactionCount.toLocaleString()} canonical transparent
+            transactions for this address.
+          </p>
+        ) : null}
         <div className="table-shell">
           <table className="data-table">
             <caption className="sr-only">
@@ -1161,7 +1177,7 @@ function TransactionTable({
             <th>Kind</th>
             <th>Block</th>
             <th>Transparent output</th>
-            <th>Shielded actions</th>
+            <th>Ironwood actions</th>
             <th>Time (UTC)</th>
           </tr>
         </thead>
@@ -1195,8 +1211,13 @@ function TransactionTable({
               >
                 {formatAmount(transaction.publicOutputValue)}
               </td>
-              <td data-label="Shielded actions" className="mono">
-                {countShieldedActions(transaction)}
+              <td data-label="Ironwood actions" className="mono">
+                {transaction.ironwoodActionCount}
+                {countLegacyShieldedActions(transaction) > 0 ? (
+                  <span className="status-label status-label-danger ml-2">
+                    Legacy fields
+                  </span>
+                ) : null}
               </td>
               <td data-label="Time (UTC)" className="whitespace-nowrap">
                 <time dateTime={transaction.blockTime}>
@@ -1497,13 +1518,59 @@ function PrivacyNotice({ text }: { text: string }) {
   );
 }
 
-function countShieldedActions(transaction: TransactionSummary) {
+function UnexpectedLegacyShieldedNotice({ count }: { count: number }) {
+  return (
+    <aside
+      role="alert"
+      className="panel flex items-start gap-3 border-[var(--danger)] p-4 text-sm"
+    >
+      <AlertTriangle
+        className="mt-0.5 shrink-0 text-[var(--danger)]"
+        size={16}
+        aria-hidden="true"
+      />
+      <div>
+        <strong>Forbidden legacy shielded fields detected</strong>
+        <p className="mt-1 leading-6 text-[var(--muted)]">
+          This transaction contains {count.toLocaleString()} Sapling or Orchard
+          field entries. Wcash expects Ironwood as its only shielded protocol;
+          treat this indexed record as a consensus anomaly.
+        </p>
+      </div>
+    </aside>
+  );
+}
+
+function countLegacyShieldedActions(transaction: TransactionSummary) {
   return (
     transaction.saplingSpendCount +
     transaction.saplingOutputCount +
-    transaction.orchardActionCount +
-    transaction.ironwoodActionCount
+    transaction.orchardActionCount
   );
+}
+
+function blockLoadError(error: unknown, id: string) {
+  if (error instanceof ExplorerApiError) {
+    if (error.status === 400) {
+      return 'That is not a valid Wcash block height or hash.';
+    }
+    if (error.status === 404) {
+      return `Block ${id} was not found on the indexed canonical chain.`;
+    }
+  }
+  return 'Block data is temporarily unavailable.';
+}
+
+function transactionLoadError(error: unknown) {
+  if (error instanceof ExplorerApiError) {
+    if (error.status === 400) {
+      return 'That is not a valid Wcash transaction identifier.';
+    }
+    if (error.status === 404) {
+      return 'That transaction was not found on the indexed canonical chain.';
+    }
+  }
+  return 'Transaction data is temporarily unavailable.';
 }
 
 function parentObservationClass(observation: ParentObservation) {

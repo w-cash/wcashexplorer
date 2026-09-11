@@ -27,7 +27,7 @@ use uuid::Uuid;
 use zebra_chain::{parameters::Network, transparent::Address as TransparentAddress};
 
 use crate::{
-    config::NetworkConfig,
+    config::{NetworkConfig, PARENT_EVIDENCE_MAX_AGE_SECONDS},
     db::Database,
     error::{ExplorerError, Result},
     models::{ApiEnvelope, PageMeta},
@@ -42,14 +42,16 @@ const READY_MAX_AGE_SECONDS: i64 = 30;
 pub struct AppState {
     pub database: Database,
     pub network: NetworkConfig,
+    pub require_parent_quorum: bool,
     pub started_at: DateTime<Utc>,
 }
 
 impl AppState {
-    pub fn new(database: Database, network: NetworkConfig) -> Self {
+    pub fn new(database: Database, network: NetworkConfig, require_parent_quorum: bool) -> Self {
         Self {
             database,
             network,
+            require_parent_quorum,
             started_at: Utc::now(),
         }
     }
@@ -113,12 +115,13 @@ async fn live() -> Json<Value> {
 }
 
 async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<Value>> {
+    let now = Utc::now();
     let row = chain_state(&state).await?;
     let lag = row
         .node_height
         .zip(row.indexed_height)
         .map(|(node, indexed)| node.saturating_sub(indexed));
-    let age = (Utc::now() - row.updated_at).num_seconds().max(0);
+    let age = (now - row.updated_at).num_seconds().max(0);
     let tips_present = row.indexed_height.is_some()
         && row.indexed_hash.is_some()
         && row.node_height.is_some()
@@ -141,22 +144,36 @@ async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<Value>> {
         }
         _ => false,
     };
+    let parent_evidence = if state.require_parent_quorum {
+        match (row.indexed_height, row.indexed_hash.as_deref()) {
+            (Some(0), Some(_)) => ParentEvidenceReadiness::genesis(),
+            (Some(height), Some(hash)) => load_parent_evidence_readiness(&state, height, hash)
+                .await?
+                .unwrap_or_default(),
+            _ => ParentEvidenceReadiness::default(),
+        }
+    } else {
+        ParentEvidenceReadiness::not_required()
+    };
+    let parent_evidence_ready = parent_evidence.is_ready(now);
     if row.status != "ready"
         || lag.is_none_or(|blocks| blocks > 1)
         || age > READY_MAX_AGE_SECONDS
         || !tips_present
         || !same_height_hash_matches
         || !canonical_tip_exists
+        || !parent_evidence_ready
     {
         return Err(ExplorerError::NotReady(format!(
-            "indexer status is {}, lag is {} block(s), heartbeat age is {age}s, and canonical tip integrity is {}",
+            "indexer status is {}, lag is {} block(s), heartbeat age is {age}s, canonical tip integrity is {}, and parent evidence is {}",
             row.status,
             lag.map_or_else(|| "unknown".to_owned(), |blocks| blocks.to_string()),
             if canonical_tip_exists && same_height_hash_matches {
                 "valid"
             } else {
                 "invalid"
-            }
+            },
+            parent_evidence.status(now),
         )));
     }
     Ok(Json(json!({
@@ -166,6 +183,43 @@ async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<Value>> {
         "nodeHeight": row.node_height,
         "updatedAt": row.updated_at,
     })))
+}
+
+async fn load_parent_evidence_readiness(
+    state: &AppState,
+    height: i64,
+    hash: &str,
+) -> Result<Option<ParentEvidenceReadiness>> {
+    Ok(sqlx::query_as(
+        "SELECT w.exact_witness_state, w.local_validation_state,
+                a.parent_lookup_state, a.parent_sources_agree,
+                a.parent_hash_meets_claimed_target, a.verified_at,
+                COUNT(DISTINCT o.source_name)::BIGINT AS source_count,
+                COUNT(DISTINCT o.source_name) FILTER (
+                    WHERE o.observation_state = 'canonical'
+                      AND o.embedded_header_matches IS TRUE
+                      AND o.parent_height IS NOT NULL
+                      AND o.parent_confirmations >= 0
+                      AND o.parent_bits = a.parent_header_bits
+                )::BIGINT AS canonical_matching_source_count,
+                MIN(o.checked_at) AS oldest_observation_at
+         FROM canonical_chain c
+         JOIN block_witnesses w
+           ON w.block_hash = c.block_hash AND w.witness_hash = c.witness_hash
+         JOIN auxpow_links a
+           ON a.block_hash = c.block_hash AND a.witness_hash = c.witness_hash
+         LEFT JOIN parent_chain_observations o
+           ON o.block_hash = c.block_hash AND o.witness_hash = c.witness_hash
+         WHERE c.network_id = $1 AND c.height = $2 AND c.block_hash = $3
+         GROUP BY w.exact_witness_state, w.local_validation_state,
+                  a.parent_lookup_state, a.parent_sources_agree,
+                  a.parent_hash_meets_claimed_target, a.verified_at",
+    )
+    .bind(&state.network.id)
+    .bind(height)
+    .bind(hash)
+    .fetch_optional(state.database.pool())
+    .await?)
 }
 
 async fn status(State(state): State<Arc<AppState>>) -> Result<Json<ApiEnvelope<StatusView>>> {
@@ -647,7 +701,7 @@ fn openapi_document() -> Value {
                 "get": {
                     "tags": ["Health"],
                     "summary": "Indexed-chain readiness",
-                    "description": "Ready only when the index heartbeat is fresh, lag is at most one block, node and index tips agree at equal heights, and the indexed tip exists in the canonical-chain table.",
+                    "description": "Ready only when the index heartbeat is fresh, lag is at most one block, node and index tips agree at equal heights, and the indexed tip exists in the canonical-chain table. With REQUIRE_PARENT_QUORUM enabled, a non-genesis tip also needs fresh, agreeing, canonical observations from at least two parent sources whose raw headers match the embedded AuxPoW header.",
                     "operationId": "getReadiness",
                     "responses": {
                         "200": success_response("The explorer is ready to serve indexed data.", schema_ref("ReadyResponse")),
@@ -1592,6 +1646,7 @@ async fn load_auxpow(
     let row = sqlx::query_as::<_, AuxPowRow>(AUXPOW_QUERY)
         .bind(block_hash)
         .bind(witness_hash)
+        .bind(&state.network.id)
         .fetch_optional(state.database.pool())
         .await?;
     let Some(row) = row else { return Ok(None) };
@@ -1905,6 +1960,68 @@ struct LatestChainRow {
     chain_supply_zat: Option<i64>,
     block_time: DateTime<Utc>,
     observed_spacing_seconds: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, FromRow)]
+struct ParentEvidenceReadiness {
+    exact_witness_state: Option<String>,
+    local_validation_state: Option<String>,
+    parent_lookup_state: Option<String>,
+    parent_sources_agree: Option<bool>,
+    parent_hash_meets_claimed_target: Option<bool>,
+    verified_at: Option<DateTime<Utc>>,
+    source_count: i64,
+    canonical_matching_source_count: i64,
+    oldest_observation_at: Option<DateTime<Utc>>,
+    #[sqlx(default)]
+    exempt: bool,
+}
+
+impl ParentEvidenceReadiness {
+    fn genesis() -> Self {
+        Self {
+            exempt: true,
+            ..Self::default()
+        }
+    }
+
+    fn not_required() -> Self {
+        Self {
+            exempt: true,
+            ..Self::default()
+        }
+    }
+
+    fn is_ready(&self, now: DateTime<Utc>) -> bool {
+        if self.exempt {
+            return true;
+        }
+        let evidence_age = self
+            .verified_at
+            .map(|verified_at| (now - verified_at).num_seconds().max(0));
+        let oldest_observation_age = self
+            .oldest_observation_at
+            .map(|checked_at| (now - checked_at).num_seconds().max(0));
+        self.exact_witness_state.as_deref() == Some("best_chain")
+            && self.local_validation_state.as_deref() == Some("auxpow_verified")
+            && self.parent_lookup_state.as_deref() == Some("canonical")
+            && self.parent_sources_agree == Some(true)
+            && self.parent_hash_meets_claimed_target == Some(true)
+            && self.source_count >= 2
+            && self.canonical_matching_source_count == self.source_count
+            && evidence_age.is_some_and(|age| age <= PARENT_EVIDENCE_MAX_AGE_SECONDS)
+            && oldest_observation_age.is_some_and(|age| age <= PARENT_EVIDENCE_MAX_AGE_SECONDS)
+    }
+
+    fn status(&self, now: DateTime<Utc>) -> &'static str {
+        if self.exempt {
+            "not required"
+        } else if self.is_ready(now) {
+            "fresh canonical quorum"
+        } else {
+            "missing, stale, or inconsistent"
+        }
+    }
 }
 
 #[derive(Clone, Debug, FromRow)]
@@ -2513,11 +2630,18 @@ const AUXPOW_QUERY: &str = "SELECT a.proof_version, a.proof_size, a.parent_block
             a.auth_data_coinbase_index, a.auxiliary_merkle_depth,
             a.auxiliary_index, a.parent_lookup_state,
             a.parent_sources_agree, a.verified_at,
-            w.exact_witness_state, w.witness_confirmations,
+            w.exact_witness_state,
+            (tip.height - c.height + 1)::BIGINT AS witness_confirmations,
             w.local_validation_state, w.verifier_version
      FROM auxpow_links a
      JOIN block_witnesses w ON w.block_hash = a.block_hash AND w.witness_hash = a.witness_hash
-     WHERE a.block_hash = $1 AND a.witness_hash = $2";
+     JOIN canonical_chain c ON c.block_hash = a.block_hash AND c.witness_hash = a.witness_hash
+     CROSS JOIN LATERAL (
+         SELECT MAX(canonical_tip.height) AS height
+         FROM canonical_chain canonical_tip
+         WHERE canonical_tip.network_id = c.network_id
+     ) tip
+     WHERE a.block_hash = $1 AND a.witness_hash = $2 AND c.network_id = $3";
 
 const ADDRESS_BALANCE_QUERY: &str = "WITH owned_outputs AS MATERIALIZED (
         SELECT c.height, c.block_hash, c.witness_hash, b.block_time,
@@ -2750,6 +2874,69 @@ mod tests {
         let network = network();
         assert_eq!(next_halving_height(0, &network), 1_680_001);
         assert_eq!(next_halving_height(1_680_001, &network), 3_360_001);
+    }
+
+    fn fresh_parent_evidence(now: DateTime<Utc>) -> ParentEvidenceReadiness {
+        ParentEvidenceReadiness {
+            exact_witness_state: Some("best_chain".to_owned()),
+            local_validation_state: Some("auxpow_verified".to_owned()),
+            parent_lookup_state: Some("canonical".to_owned()),
+            parent_sources_agree: Some(true),
+            parent_hash_meets_claimed_target: Some(true),
+            verified_at: Some(now),
+            source_count: 2,
+            canonical_matching_source_count: 2,
+            oldest_observation_at: Some(now),
+            exempt: false,
+        }
+    }
+
+    #[test]
+    fn strict_parent_evidence_requires_fresh_matching_canonical_quorum() {
+        let now = Utc::now();
+        let mut evidence = fresh_parent_evidence(now);
+        assert!(evidence.is_ready(now));
+
+        evidence.source_count = 1;
+        evidence.canonical_matching_source_count = 1;
+        assert!(!evidence.is_ready(now));
+
+        evidence = fresh_parent_evidence(now);
+        evidence.canonical_matching_source_count = 1;
+        assert!(!evidence.is_ready(now));
+
+        evidence = fresh_parent_evidence(now);
+        evidence.exact_witness_state = Some("orphaned".to_owned());
+        assert!(!evidence.is_ready(now));
+
+        evidence = fresh_parent_evidence(now);
+        evidence.local_validation_state = Some("invalid".to_owned());
+        assert!(!evidence.is_ready(now));
+
+        evidence = fresh_parent_evidence(now);
+        evidence.parent_lookup_state = Some("unavailable".to_owned());
+        assert!(!evidence.is_ready(now));
+
+        evidence = fresh_parent_evidence(now);
+        evidence.parent_sources_agree = Some(false);
+        assert!(!evidence.is_ready(now));
+
+        evidence = fresh_parent_evidence(now);
+        evidence.parent_hash_meets_claimed_target = Some(false);
+        assert!(!evidence.is_ready(now));
+
+        evidence = fresh_parent_evidence(now);
+        evidence.verified_at =
+            Some(now - chrono::Duration::seconds(PARENT_EVIDENCE_MAX_AGE_SECONDS + 1));
+        assert!(!evidence.is_ready(now));
+
+        evidence = fresh_parent_evidence(now);
+        evidence.oldest_observation_at =
+            Some(now - chrono::Duration::seconds(PARENT_EVIDENCE_MAX_AGE_SECONDS + 1));
+        assert!(!evidence.is_ready(now));
+
+        assert!(ParentEvidenceReadiness::genesis().is_ready(now));
+        assert!(ParentEvidenceReadiness::not_required().is_ready(now));
     }
 
     #[test]

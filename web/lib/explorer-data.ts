@@ -44,6 +44,7 @@ export type Status = {
   initialSubsidy: Amount;
   nextHalvingHeight: number;
   coinbaseMaturity: number;
+  latestBlockTime: string | null;
 };
 
 export type Envelope<T> = {
@@ -403,6 +404,7 @@ export const unavailableDashboard: DashboardData = {
       },
       nextHalvingHeight: 1_680_001,
       coinbaseMaturity: 100,
+      latestBlockTime: null,
     },
     meta: {
       indexedHeight: null,
@@ -457,6 +459,7 @@ export const previewDashboard: DashboardData = {
       },
       nextHalvingHeight: 1_680_001,
       coinbaseMaturity: 100,
+      latestBlockTime: previewBlocks[0]?.time ?? null,
     },
     meta: {
       indexedHeight: 48,

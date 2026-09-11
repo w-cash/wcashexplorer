@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import {
   type BlockSummary,
   type DashboardData,
@@ -17,6 +18,7 @@ export function Dashboard() {
     previewEnabled ? previewDashboard : unavailableDashboard,
   );
   const [loading, setLoading] = useState(true);
+  const [observedAt, setObservedAt] = useState<number | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -26,8 +28,12 @@ export function Dashboard() {
         (result) => {
           setDashboard(result);
           setLoading(false);
+          setObservedAt(Date.now());
         },
-        () => setLoading(false),
+        () => {
+          setLoading(false);
+          setObservedAt(Date.now());
+        },
       );
     };
     refresh();
@@ -41,18 +47,22 @@ export function Dashboard() {
   }, []);
 
   const status = dashboard.status.data;
-  const latestProof = useMemo(
-    () =>
-      dashboard.proofBlock ??
-      dashboard.blocks.data.find(
-        (block) => block.mergeMining.parentLookupState === 'canonical',
-      ) ??
-      dashboard.blocks.data[0],
-    [dashboard.blocks.data, dashboard.proofBlock],
+  const latestProof =
+    dashboard.source === 'live'
+      ? dashboard.blocks.data[0]
+      : (dashboard.proofBlock ?? dashboard.blocks.data[0]);
+  const latestBlockAgeSeconds = secondsSince(
+    status.latestBlockTime,
+    observedAt,
   );
   const isReady = status.status === 'ready';
   const statusFailed = isFailureState(status.status);
   const isPreview = dashboard.source === 'preview';
+  const staleAfterSeconds = Math.max(status.targetSpacingSeconds * 8, 15 * 60);
+  const chainAppearsStale =
+    dashboard.source === 'live' &&
+    latestBlockAgeSeconds !== null &&
+    latestBlockAgeSeconds > staleAfterSeconds;
 
   return (
     <div className="space-y-6">
@@ -96,12 +106,31 @@ export function Dashboard() {
               <span>
                 {isPreview
                   ? 'fixed snapshot'
-                  : `${dashboard.status.meta.freshnessSeconds}s old`}
+                  : `index checked ${dashboard.status.meta.freshnessSeconds}s ago`}
               </span>
             </>
           )}
         </div>
       </section>
+
+      {chainAppearsStale ? (
+        <aside className="panel flex items-start gap-3 border-[var(--warning)] p-4 text-sm">
+          <AlertTriangle
+            className="mt-0.5 shrink-0 text-[var(--warning)]"
+            size={17}
+            aria-hidden="true"
+          />
+          <div>
+            <strong>Block production appears paused</strong>
+            <p className="mt-1 leading-6 text-[var(--muted)]">
+              No new Wcash block has been indexed for{' '}
+              {formatAge(latestBlockAgeSeconds)}. The explorer is synchronized
+              with its configured node; that does not mean the network is
+              currently producing blocks.
+            </p>
+          </div>
+        </aside>
+      ) : null}
 
       <SearchBox />
 
@@ -110,11 +139,13 @@ export function Dashboard() {
           label="Latest block"
           value={`#${status.indexedHeight ?? '—'}`}
           foot={
-            status.lagBlocks === null
-              ? 'Node comparison unavailable'
-              : status.lagBlocks === 0
-                ? 'Synced with node'
-                : `${status.lagBlocks} ${status.lagBlocks === 1 ? 'block' : 'blocks'} behind`
+            status.latestBlockTime
+              ? `Mined ${relativeTime(status.latestBlockTime)}`
+              : status.lagBlocks === null
+                ? 'Node comparison unavailable'
+                : status.lagBlocks === 0
+                  ? 'Synced with node'
+                  : `${status.lagBlocks} ${status.lagBlocks === 1 ? 'block' : 'blocks'} behind`
           }
         />
         <Metric
@@ -439,4 +470,19 @@ function isFailureState(value: string) {
   return ['error', 'failed', 'invalid', 'rejected', 'unavailable'].some(
     (state) => normalized.includes(state),
   );
+}
+
+function secondsSince(value: string | null, observedAt: number | null) {
+  if (!value || observedAt === null) return null;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, Math.floor((observedAt - timestamp) / 1_000));
+}
+
+function formatAge(seconds: number | null) {
+  if (seconds === null) return 'an unknown period';
+  if (seconds < 60) return `${seconds} seconds`;
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)} minutes`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)} hours`;
+  return `${Math.floor(seconds / 86_400)} days`;
 }

@@ -201,11 +201,123 @@ async fn exercise_analytics(database_url: &str) -> Result<()> {
         .update_node_tip("testnet", 2, &new_two.block.hash, "ready", None)
         .await?;
 
-    let app = api::router(AppState::new(database.clone(), network));
+    let app = api::router(AppState::new(database.clone(), network.clone(), false));
 
     let ready = get_json(&app, "/health/ready").await?;
     ensure!(ready["status"] == "ready");
     ensure!(ready["indexedHeight"] == 2);
+
+    let refresh_candidate = database
+        .evidence_refresh_candidate("testnet", 100)
+        .await?
+        .context("freshness scheduler did not select an AuxPoW block")?;
+    ensure!(
+        refresh_candidate == (2, new_two.block.hash.clone()),
+        "the canonical tip must be refreshed before older evidence"
+    );
+
+    sqlx::query(
+        "UPDATE auxpow_links SET verified_at = now()
+         WHERE block_hash = $1 AND witness_hash = $2",
+    )
+    .bind(&new_two.block.hash)
+    .bind(
+        &new_two
+            .auxpow
+            .as_ref()
+            .expect("fixture AuxPoW")
+            .witness_hash,
+    )
+    .execute(database.pool())
+    .await?;
+    sqlx::query(
+        "UPDATE parent_chain_observations SET checked_at = now()
+         WHERE block_hash = $1 AND witness_hash = $2",
+    )
+    .bind(&new_two.block.hash)
+    .bind(
+        &new_two
+            .auxpow
+            .as_ref()
+            .expect("fixture AuxPoW")
+            .witness_hash,
+    )
+    .execute(database.pool())
+    .await?;
+    let strict_app = api::router(AppState::new(database.clone(), network.clone(), true));
+    let strict_ready = get_json(&strict_app, "/health/ready").await?;
+    ensure!(strict_ready["status"] == "ready");
+
+    sqlx::query(
+        "UPDATE parent_chain_observations SET observation_state = 'unavailable'
+         WHERE block_hash = $1 AND witness_hash = $2 AND source_name = 'parent-b'",
+    )
+    .bind(&new_two.block.hash)
+    .bind(
+        &new_two
+            .auxpow
+            .as_ref()
+            .expect("fixture AuxPoW")
+            .witness_hash,
+    )
+    .execute(database.pool())
+    .await?;
+    assert_not_ready(&strict_app, "/health/ready").await?;
+    sqlx::query(
+        "UPDATE parent_chain_observations
+         SET observation_state = 'canonical', embedded_header_matches = TRUE,
+             checked_at = now() - interval '61 seconds'
+         WHERE block_hash = $1 AND witness_hash = $2",
+    )
+    .bind(&new_two.block.hash)
+    .bind(
+        &new_two
+            .auxpow
+            .as_ref()
+            .expect("fixture AuxPoW")
+            .witness_hash,
+    )
+    .execute(database.pool())
+    .await?;
+    assert_not_ready(&strict_app, "/health/ready").await?;
+    sqlx::query(
+        "UPDATE parent_chain_observations SET checked_at = now()
+         WHERE block_hash = $1 AND witness_hash = $2",
+    )
+    .bind(&new_two.block.hash)
+    .bind(
+        &new_two
+            .auxpow
+            .as_ref()
+            .expect("fixture AuxPoW")
+            .witness_hash,
+    )
+    .execute(database.pool())
+    .await?;
+    get_json(&strict_app, "/health/ready").await?;
+
+    let block_one_witness = &block_one
+        .auxpow
+        .as_ref()
+        .expect("fixture AuxPoW")
+        .witness_hash;
+    sqlx::query(
+        "UPDATE block_witnesses SET witness_confirmations = 999
+         WHERE block_hash = $1 AND witness_hash = $2",
+    )
+    .bind(&block_one.block.hash)
+    .bind(block_one_witness)
+    .execute(database.pool())
+    .await?;
+    let block_one_auxpow = get_json(
+        &strict_app,
+        &format!("/api/v1/blocks/{}/auxpow", block_one.block.hash),
+    )
+    .await?;
+    ensure!(
+        block_one_auxpow["data"]["witnessConfirmations"] == 2,
+        "AuxPoW confirmations must be derived from the current canonical tip"
+    );
 
     let address = get_json(&app, &format!("/api/v1/addresses/{address_a}")).await?;
     let address = &address["data"];
@@ -423,6 +535,21 @@ async fn assert_not_found(app: &Router, path: &str) -> Result<()> {
     ensure!(
         status == StatusCode::NOT_FOUND,
         "expected {path} to return 404, got {status}: {body}"
+    );
+    Ok(())
+}
+
+async fn assert_not_ready(app: &Router, path: &str) -> Result<()> {
+    let (status, body) = request_json(app, path).await?;
+    ensure!(
+        status == StatusCode::SERVICE_UNAVAILABLE,
+        "expected {path} to return 503, got {status}: {body}"
+    );
+    ensure!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("parent evidence")),
+        "readiness failure did not identify parent evidence: {body}"
     );
     Ok(())
 }

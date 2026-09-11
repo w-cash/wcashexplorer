@@ -70,7 +70,11 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("could not bind explorer API to {}", config.bind))?;
     info!(bind = %config.bind, network = %config.network.id, "WcashExplorer API is listening");
-    let app = router(AppState::new(database, config.network));
+    let app = router(AppState::new(
+        database,
+        config.network,
+        config.require_parent_quorum,
+    ));
     let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
     if let Some(mut handle) = indexer_handle {
         tokio::select! {

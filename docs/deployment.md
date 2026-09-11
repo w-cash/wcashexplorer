@@ -182,9 +182,14 @@ Use:
 - `/health/ready` for traffic readiness.
 
 Readiness requires a fresh indexer heartbeat, a valid canonical tip, and no
-more than one block of lag. Remove an instance from service immediately when
-readiness fails. Alert separately on parent `disagreement`, `unavailable`, or
-stale observation times even when historical API reads still work.
+more than one block of lag. With `REQUIRE_PARENT_QUORUM=true`, every
+non-genesis canonical tip must also have at least two fresh parent observations;
+all must be canonical, agree, and match the embedded parent header. The indexer
+prioritizes the tip for refresh after 30 seconds, and the readiness budget is 60
+seconds so one missed refresh does not flap traffic. Parent uncertainty makes
+the strict probe fail but does not stop local Wcash indexing. Remove an instance
+from service immediately when readiness fails; historical API reads remain
+available for diagnosis.
 
 ## Verification before ASIC or public test traffic
 
