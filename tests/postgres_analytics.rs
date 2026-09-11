@@ -110,7 +110,9 @@ async fn exercise_analytics(database_url: &str) -> Result<()> {
     database.migrate().await?;
     database.initialize_network(&network).await?;
 
-    let genesis_tx = coinbase_transaction(0x40, 100 * COIN, &address_b);
+    let mut genesis_tx = coinbase_transaction(0x40, 100 * COIN, &address_b);
+    genesis_tx.version = 1;
+    genesis_tx.authdigest = Some("ff".repeat(32));
     let genesis = synthetic_block(
         0x10,
         0,
@@ -163,7 +165,62 @@ async fn exercise_analytics(database_url: &str) -> Result<()> {
     });
 
     database.commit_block("testnet", &genesis).await?;
+    let mut metadata_refresh = genesis.clone();
+    metadata_refresh.block.tx[0]
+        .extra
+        .insert("confirmations".to_owned(), json!(99));
+    database
+        .refresh_block_evidence("testnet", &metadata_refresh)
+        .await
+        .context("metadata-only transaction refresh must remain valid")?;
+    let mut altered_genesis = genesis.clone();
+    altered_genesis.block.tx[0].vout[0].value_zat += 1;
+    ensure!(
+        database
+            .refresh_block_evidence("testnet", &altered_genesis)
+            .await
+            .is_err(),
+        "a repeated transaction instance with changed outputs was accepted"
+    );
     database.commit_block("testnet", &block_one).await?;
+    let mut missing_modern_auth_digest = block_one.clone();
+    missing_modern_auth_digest.block.tx[0].authdigest = None;
+    ensure!(
+        database
+            .refresh_block_evidence("testnet", &missing_modern_auth_digest)
+            .await
+            .is_err(),
+        "a version 6 transaction without an authorization digest was accepted"
+    );
+    let mut altered_input = block_one.clone();
+    altered_input.block.tx[1].vin[0].sequence = Some(1);
+    ensure!(
+        database
+            .refresh_block_evidence("testnet", &altered_input)
+            .await
+            .is_err(),
+        "a repeated transaction instance with changed inputs was accepted"
+    );
+    let mut altered_shielded_count = block_one.clone();
+    altered_shielded_count.block.tx[1]
+        .shielded_spends
+        .push(json!({"fixture": true}));
+    ensure!(
+        database
+            .refresh_block_evidence("testnet", &altered_shielded_count)
+            .await
+            .is_err(),
+        "a repeated transaction instance with changed shielded structure was accepted"
+    );
+    let mut altered_position = block_one.clone();
+    altered_position.block.tx.swap(0, 1);
+    ensure!(
+        database
+            .refresh_block_evidence("testnet", &altered_position)
+            .await
+            .is_err(),
+        "a repeated block with changed transaction positions was accepted"
+    );
     database.commit_block("testnet", &old_two).await?;
     let old_tip = database
         .canonical_tip("testnet")
@@ -202,6 +259,16 @@ async fn exercise_analytics(database_url: &str) -> Result<()> {
         .await?;
 
     let app = api::router(AppState::new(database.clone(), network.clone(), false));
+
+    let genesis_view = get_json(&app, "/api/v1/blocks/0").await?;
+    let indexed_genesis_tx = &genesis_view["data"]["transactions"][0];
+    ensure!(indexed_genesis_tx["authDigest"].is_null());
+    ensure!(indexed_genesis_tx["instanceDigestKind"] == "explorer-raw-hash");
+    ensure!(
+        indexed_genesis_tx["instanceDigest"]
+            .as_str()
+            .is_some_and(|digest| digest.len() == 64)
+    );
 
     let ready = get_json(&app, "/health/ready").await?;
     ensure!(ready["status"] == "ready");
@@ -350,6 +417,7 @@ async fn exercise_analytics(database_url: &str) -> Result<()> {
     ensure!(rich_list["asOfHeight"] == 2);
     ensure!(rich_list["asOfHash"] == new_two.block.hash);
     ensure!(rich_list["transparentPool"]["decimal"] == "115.00000000");
+    ensure!(rich_list["transparentPoolReported"] == true);
     ensure!(rich_list["transparentPoolMonitored"] == true);
     ensure!(rich_list["fundedAddressCount"] == 2);
     ensure!(rich_list["addressedBalance"]["decimal"] == "115.00000000");
@@ -374,6 +442,7 @@ async fn exercise_analytics(database_url: &str) -> Result<()> {
     ensure!(stats["seenAddressCount"] == 2);
     ensure!(stats["addressedBalance"]["decimal"] == "115.00000000");
     ensure!(stats["transparentPool"]["decimal"] == "115.00000000");
+    ensure!(stats["transparentPoolReported"] == true);
     ensure!(stats["addresslessOrUndecodedBalance"]["decimal"] == "0.00000000");
     let address_points = stats["points"]
         .as_array()
@@ -425,7 +494,9 @@ async fn exercise_analytics(database_url: &str) -> Result<()> {
     ensure!(latest_pool["transparent"]["chainValue"]["decimal"] == "115.00000000");
     ensure!(latest_pool["transparent"]["valueDelta"]["decimal"] == "5.00000000");
     ensure!(latest_pool["transparent"]["monitored"] == true);
-    ensure!(latest_pool["ironwood"]["chainValue"].is_null());
+    ensure!(latest_pool["transparent"]["reported"] == true);
+    ensure!(latest_pool["ironwood"]["chainValue"]["decimal"] == "0.00000000");
+    ensure!(latest_pool["ironwood"]["reported"] == true);
     ensure!(latest_pool["ironwood"]["monitored"] == false);
 
     let merge = get_json(&app, "/api/v1/merge-mining/stats").await?;
@@ -509,10 +580,12 @@ async fn exercise_analytics(database_url: &str) -> Result<()> {
     .await?;
     let missing_tip_pool = get_json(&app, "/api/v1/addresses/stats?limit=10").await?;
     ensure!(missing_tip_pool["data"]["transparentPool"].is_null());
+    ensure!(missing_tip_pool["data"]["transparentPoolReported"] == false);
     ensure!(missing_tip_pool["data"]["transparentPoolMonitored"].is_null());
     ensure!(missing_tip_pool["data"]["addresslessOrUndecodedBalance"].is_null());
     let missing_tip_rich_list = get_json(&app, "/api/v1/addresses/rich-list?limit=10").await?;
     ensure!(missing_tip_rich_list["data"]["transparentPool"].is_null());
+    ensure!(missing_tip_rich_list["data"]["transparentPoolReported"] == false);
     ensure!(missing_tip_rich_list["data"]["transparentPoolMonitored"].is_null());
     ensure!(missing_tip_rich_list["data"]["addresslessOrUndecodedBalance"].is_null());
 
@@ -617,8 +690,8 @@ fn synthetic_block(
                 },
                 ValuePool {
                     id: "ironwood".to_owned(),
-                    chain_value_zat: None,
-                    value_delta_zat: None,
+                    chain_value_zat: Some(0),
+                    value_delta_zat: Some(0),
                     monitored: Some(false),
                 },
             ],

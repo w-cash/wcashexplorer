@@ -66,9 +66,12 @@ retention, authorization, and breach risks; it is outside this explorer's scope.
 
 ## Transaction identity and metadata
 
-The explorer preserves both the transaction ID and ZIP-244 authorization digest
-so that distinct authorized transaction instances are not collapsed. Raw node
-JSON may contain public shielded artifacts, but never decrypted note plaintext.
+The explorer preserves the transaction ID, an internal instance fingerprint,
+and the ZIP-244 authorization digest when the transaction version defines one,
+so distinct serialized or authorized instances are not collapsed. It never
+labels an explorer-generated fingerprint as a consensus authorization digest.
+Raw node JSON may contain public shielded artifacts, but never decrypted note
+plaintext.
 
 Network metadata still has privacy implications. Public access logs can reveal
 which block, transaction, or transparent address a visitor requested. Operators
@@ -88,8 +91,11 @@ This repository does not currently define a production log-retention policy.
 
 The displayed “total issued” value comes from chain supply reported for the
 canonical tip. It is not a sum of visible transparent balances. Value-pool totals
-are protocol-level aggregates, not lists of users or accounts. A missing or
-unmonitored value must be shown as unavailable, not silently converted to zero.
+are protocol-level aggregates, not lists of users or accounts. A non-null value
+reported by the node is exact, including zero. A missing value is shown as
+unavailable. The node's legacy `monitored` flag is retained as compatibility
+telemetry but is not used as a value-presence signal because current Wcash nodes
+set it to false for an exactly zero pool.
 
 ## AuxPoW does not weaken transaction privacy by itself
 

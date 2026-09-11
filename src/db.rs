@@ -552,6 +552,9 @@ async fn insert_block(
 
     for (position, rpc_transaction) in block.tx.iter().enumerate() {
         let transaction_id = insert_transaction(transaction, rpc_transaction).await?;
+        let position = i32::try_from(position).map_err(|_| {
+            ExplorerError::InvalidNodeResponse("transaction position overflow".to_owned())
+        })?;
         sqlx::query(
             "INSERT INTO block_transactions (
                 block_hash, witness_hash, tx_position, transaction_instance_id
@@ -560,12 +563,25 @@ async fn insert_block(
         )
         .bind(&block.hash)
         .bind(&witness_hash)
-        .bind(i32::try_from(position).map_err(|_| {
-            ExplorerError::InvalidNodeResponse("transaction position overflow".to_owned())
-        })?)
+        .bind(position)
         .bind(transaction_id)
         .execute(&mut **transaction)
         .await?;
+        let stored_transaction_id: i64 = sqlx::query_scalar(
+            "SELECT transaction_instance_id FROM block_transactions
+             WHERE block_hash = $1 AND witness_hash = $2 AND tx_position = $3",
+        )
+        .bind(&block.hash)
+        .bind(&witness_hash)
+        .bind(position)
+        .fetch_one(&mut **transaction)
+        .await?;
+        if stored_transaction_id != transaction_id {
+            return Err(ExplorerError::InvalidNodeResponse(format!(
+                "immutable transaction position changed for {}:{position}",
+                block.hash
+            )));
+        }
     }
 
     for pool in &block.value_pools {
@@ -711,9 +727,20 @@ async fn insert_transaction(
         .map(|value| decode_hex(value, 4 * 1024 * 1024))
         .transpose()?;
     let raw_hash = raw_transaction_hash(rpc_transaction, raw.as_deref());
-    let auth_digest = rpc_transaction.authdigest.as_deref().unwrap_or(&raw_hash);
     ensure_hash("transaction ID", &rpc_transaction.txid)?;
-    ensure_hash("transaction authorization digest", auth_digest)?;
+    let auth_digest = if rpc_transaction.version >= 5 {
+        let auth_digest = rpc_transaction.authdigest.as_deref().ok_or_else(|| {
+            ExplorerError::InvalidNodeResponse(format!(
+                "version {} transaction {} has no authorization digest",
+                rpc_transaction.version, rpc_transaction.txid
+            ))
+        })?;
+        ensure_hash("transaction authorization digest", auth_digest)?;
+        Some(auth_digest)
+    } else {
+        None
+    };
+    let instance_digest = auth_digest.unwrap_or(&raw_hash);
     let is_coinbase = rpc_transaction
         .vin
         .iter()
@@ -721,20 +748,21 @@ async fn insert_transaction(
     let raw_rpc = serde_json::to_value(rpc_transaction).map_err(|error| {
         ExplorerError::InvalidNodeResponse(format!("could not preserve transaction JSON: {error}"))
     })?;
-    let id: i64 = sqlx::query_scalar(
+    let inserted_id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO transaction_instances (
-            txid, auth_digest, raw_hash, raw_transaction, version, size_bytes,
+            txid, instance_digest, auth_digest, raw_hash, raw_transaction, version, size_bytes,
             lock_time, expiry_height, is_coinbase, value_balance_zat,
             sapling_spend_count, sapling_output_count, orchard_action_count,
             ironwood_action_count, raw_rpc
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-         ON CONFLICT (txid, auth_digest) DO UPDATE SET txid = EXCLUDED.txid
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+         ON CONFLICT (txid, instance_digest) DO NOTHING
          RETURNING transaction_instance_id",
     )
     .bind(&rpc_transaction.txid)
+    .bind(instance_digest)
     .bind(auth_digest)
     .bind(&raw_hash)
-    .bind(raw)
+    .bind(raw.as_deref())
     .bind(rpc_transaction.version)
     .bind(to_i64(rpc_transaction.size, "transaction size")?)
     .bind(to_i64(rpc_transaction.locktime, "lock time")?)
@@ -752,18 +780,39 @@ async fn insert_transaction(
     .bind(bundle_action_count(rpc_transaction.orchard.as_ref()))
     .bind(bundle_action_count(rpc_transaction.ironwood.as_ref()))
     .bind(raw_rpc)
-    .fetch_one(&mut **transaction)
+    .fetch_optional(&mut **transaction)
     .await?;
+    let id = match inserted_id {
+        Some(id) => id,
+        None => {
+            sqlx::query_scalar(
+                "SELECT transaction_instance_id FROM transaction_instances
+             WHERE txid = $1 AND instance_digest = $2",
+            )
+            .bind(&rpc_transaction.txid)
+            .bind(instance_digest)
+            .fetch_one(&mut **transaction)
+            .await?
+        }
+    };
 
     let stored = sqlx::query(
-        "SELECT raw_hash, version, size_bytes, lock_time, expiry_height,
-                is_coinbase, value_balance_zat
+        "SELECT instance_digest, auth_digest, raw_hash, raw_transaction,
+                version, size_bytes, lock_time, expiry_height, is_coinbase,
+                value_balance_zat, sapling_spend_count, sapling_output_count,
+                orchard_action_count, ironwood_action_count
          FROM transaction_instances WHERE transaction_instance_id = $1",
     )
     .bind(id)
     .fetch_one(&mut **transaction)
     .await?;
-    if stored.try_get::<String, _>("raw_hash")? != raw_hash
+    if stored.try_get::<String, _>("instance_digest")? != instance_digest
+        || stored
+            .try_get::<Option<String>, _>("auth_digest")?
+            .as_deref()
+            != auth_digest
+        || stored.try_get::<String, _>("raw_hash")? != raw_hash
+        || stored.try_get::<Option<Vec<u8>>, _>("raw_transaction")? != raw
         || stored.try_get::<i64, _>("version")? != rpc_transaction.version
         || stored.try_get::<i64, _>("size_bytes")?
             != to_i64(rpc_transaction.size, "transaction size")?
@@ -773,10 +822,21 @@ async fn insert_transaction(
         || stored.try_get::<bool, _>("is_coinbase")? != is_coinbase
         || stored.try_get::<Option<i64>, _>("value_balance_zat")?
             != rpc_transaction.value_balance_zat
+        || stored.try_get::<i32, _>("sapling_spend_count")?
+            != to_i32(rpc_transaction.shielded_spends.len(), "Sapling spend count")?
+        || stored.try_get::<i32, _>("sapling_output_count")?
+            != to_i32(
+                rpc_transaction.shielded_outputs.len(),
+                "Sapling output count",
+            )?
+        || stored.try_get::<i32, _>("orchard_action_count")?
+            != bundle_action_count(rpc_transaction.orchard.as_ref())
+        || stored.try_get::<i32, _>("ironwood_action_count")?
+            != bundle_action_count(rpc_transaction.ironwood.as_ref())
     {
         return Err(ExplorerError::InvalidNodeResponse(format!(
             "immutable transaction facts changed for {}:{}",
-            rpc_transaction.txid, auth_digest
+            rpc_transaction.txid, instance_digest
         )));
     }
 
@@ -813,6 +873,50 @@ async fn insert_transaction(
         .execute(&mut **transaction)
         .await?;
     }
+    let stored_inputs = sqlx::query(
+        "SELECT input_index, previous_txid, previous_output_index, coinbase_data, sequence
+         FROM transparent_inputs WHERE transaction_instance_id = $1 ORDER BY input_index",
+    )
+    .bind(id)
+    .fetch_all(&mut **transaction)
+    .await?;
+    if stored_inputs.len() != rpc_transaction.vin.len() {
+        return Err(ExplorerError::InvalidNodeResponse(format!(
+            "immutable transparent inputs changed for {}:{}",
+            rpc_transaction.txid, instance_digest
+        )));
+    }
+    for (position, (stored, input)) in stored_inputs.iter().zip(&rpc_transaction.vin).enumerate() {
+        let expected_index = i32::try_from(position).map_err(|_| {
+            ExplorerError::InvalidNodeResponse("input index exceeds the database range".to_owned())
+        })?;
+        let expected_previous_output = input
+            .vout
+            .map(|value| {
+                i32::try_from(value).map_err(|_| {
+                    ExplorerError::InvalidNodeResponse(
+                        "previous output index exceeds the database range".to_owned(),
+                    )
+                })
+            })
+            .transpose()?;
+        let expected_sequence = input
+            .sequence
+            .map(|value| to_i64(value, "input sequence"))
+            .transpose()?;
+        if stored.try_get::<i32, _>("input_index")? != expected_index
+            || stored.try_get::<Option<String>, _>("previous_txid")? != input.txid
+            || stored.try_get::<Option<i32>, _>("previous_output_index")?
+                != expected_previous_output
+            || stored.try_get::<Option<String>, _>("coinbase_data")? != input.coinbase
+            || stored.try_get::<Option<i64>, _>("sequence")? != expected_sequence
+        {
+            return Err(ExplorerError::InvalidNodeResponse(format!(
+                "immutable transparent inputs changed for {}:{}",
+                rpc_transaction.txid, instance_digest
+            )));
+        }
+    }
     for output in &rpc_transaction.vout {
         sqlx::query(
             "INSERT INTO transparent_outputs (
@@ -833,6 +937,36 @@ async fn insert_transaction(
         .bind(output.script_pub_key.hex.as_deref())
         .execute(&mut **transaction)
         .await?;
+    }
+    let stored_outputs = sqlx::query(
+        "SELECT output_index, value_zat, address, script_type, script_hex
+         FROM transparent_outputs WHERE transaction_instance_id = $1 ORDER BY output_index",
+    )
+    .bind(id)
+    .fetch_all(&mut **transaction)
+    .await?;
+    if stored_outputs.len() != rpc_transaction.vout.len() {
+        return Err(ExplorerError::InvalidNodeResponse(format!(
+            "immutable transparent outputs changed for {}:{}",
+            rpc_transaction.txid, instance_digest
+        )));
+    }
+    for (stored, output) in stored_outputs.iter().zip(&rpc_transaction.vout) {
+        let expected_index = i32::try_from(output.n)
+            .map_err(|_| ExplorerError::InvalidNodeResponse("output index overflow".to_owned()))?;
+        if stored.try_get::<i32, _>("output_index")? != expected_index
+            || stored.try_get::<i64, _>("value_zat")? != output.value_zat
+            || stored.try_get::<Option<String>, _>("address")?
+                != output.script_pub_key.primary_address().map(str::to_owned)
+            || stored.try_get::<Option<String>, _>("script_type")?
+                != output.script_pub_key.script_type
+            || stored.try_get::<Option<String>, _>("script_hex")? != output.script_pub_key.hex
+        {
+            return Err(ExplorerError::InvalidNodeResponse(format!(
+                "immutable transparent outputs changed for {}:{}",
+                rpc_transaction.txid, instance_digest
+            )));
+        }
     }
     Ok(id)
 }
@@ -932,7 +1066,9 @@ fn raw_transaction_hash(transaction: &RpcTransaction, raw: Option<&[u8]>) -> Str
         hasher.update(raw);
     } else {
         hasher.update(transaction.txid.as_bytes());
-        if let Some(auth_digest) = &transaction.authdigest {
+        if transaction.version >= 5
+            && let Some(auth_digest) = &transaction.authdigest
+        {
             hasher.update(auth_digest.as_bytes());
         }
     }

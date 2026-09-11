@@ -70,12 +70,15 @@ export type ValuePool = {
   id: string;
   chainValue: Amount | null;
   valueDelta: Amount | null;
+  reported: boolean;
   monitored: boolean | null;
 };
 
 export type TransactionSummary = {
   txid: string;
-  authDigest: string;
+  instanceDigest: string;
+  instanceDigestKind: 'consensus-auth-digest' | 'explorer-raw-hash';
+  authDigest: string | null;
   version: number;
   sizeBytes: number;
   isCoinbase: boolean;
@@ -189,7 +192,8 @@ export type AddressDetail = {
   canonicalDoubleSpendAnomalies: number;
   activity: Array<{
     txid: string;
-    authDigest: string;
+    instanceDigest: string;
+    authDigest: string | null;
     blockHeight: number;
     blockHash: string;
     blockTime: string;
@@ -226,6 +230,7 @@ export type PoolSnapshot = {
   id: string;
   chainValue: Amount | null;
   valueDelta: Amount | null;
+  reported: boolean;
   monitored: boolean | null;
 };
 
@@ -272,6 +277,7 @@ export type TransparentAddressStats = {
   seenAddressCount: number;
   addressedBalance: Amount;
   transparentPool: Amount | null;
+  transparentPoolReported: boolean;
   transparentPoolMonitored: boolean | null;
   addresslessOrUndecodedBalance: Amount | null;
   points: Array<{
@@ -288,6 +294,7 @@ export type TransparentRichList = {
   asOfHeight: number | null;
   asOfHash: string | null;
   transparentPool: Amount | null;
+  transparentPoolReported: boolean;
   transparentPoolMonitored: boolean | null;
   fundedAddressCount: number;
   addressedBalance: Amount;
