@@ -7,7 +7,7 @@ use sqlx::{PgPool, Postgres, Row, Transaction, pool::PoolConnection, postgres::P
 use uuid::Uuid;
 
 use crate::{
-    config::NetworkConfig,
+    config::{NetworkConfig, PARENT_EVIDENCE_REFRESH_INTERVAL_SECONDS},
     error::{ExplorerError, Result},
     models::{IndexedBlock, RpcTransaction},
 };
@@ -197,7 +197,7 @@ impl Database {
         .await?)
     }
 
-    /// Selects the stalest recent AuxPoW record for periodic evidence refresh.
+    /// Selects the stale canonical tip first, then the stalest recent AuxPoW record.
     pub async fn evidence_refresh_candidate(
         &self,
         network_id: &str,
@@ -213,12 +213,13 @@ impl Database {
              CROSS JOIN tip
              WHERE c.network_id = $1
                AND c.height >= GREATEST(1, tip.height - $2)
-               AND a.verified_at < now() - interval '30 seconds'
-             ORDER BY a.verified_at ASC
+               AND a.verified_at < now() - ($3 * interval '1 second')
+             ORDER BY (c.height = tip.height) DESC, a.verified_at ASC
              LIMIT 1",
         )
         .bind(network_id)
         .bind(to_i64(depth, "evidence refresh depth")?)
+        .bind(PARENT_EVIDENCE_REFRESH_INTERVAL_SECONDS)
         .fetch_optional(&self.pool)
         .await?;
         row.map(|row| {
@@ -624,6 +625,18 @@ async fn insert_block(
         .bind(aux.parent_lookup_state.as_str())
         .bind(aux.parent_sources_agree)
         .bind(indexed.fetched_at)
+        .execute(&mut **transaction)
+        .await?;
+
+        // One verification pass is an authoritative snapshot of the configured
+        // parent sources. Remove observations from sources that are no longer
+        // configured so they cannot keep strict readiness permanently stale.
+        sqlx::query(
+            "DELETE FROM parent_chain_observations
+             WHERE block_hash = $1 AND witness_hash = $2",
+        )
+        .bind(&block.hash)
+        .bind(&witness_hash)
         .execute(&mut **transaction)
         .await?;
 
