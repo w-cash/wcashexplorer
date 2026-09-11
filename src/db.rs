@@ -62,8 +62,11 @@ impl Database {
         Ok(())
     }
 
-    /// Binds this database permanently to one configured chain identity.
+    /// Binds this database to one chain identity and refreshes its presentation ticker.
     pub async fn initialize_network(&self, network: &NetworkConfig) -> Result<()> {
+        let halving_interval = to_i64(network.halving_interval, "halving interval")?;
+        let first_halving_height = to_i64(network.first_halving_height, "first halving height")?;
+        let mut transaction = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO networks (
                 network_id, display_name, symbol, decimals, coinbase_maturity,
@@ -80,27 +83,24 @@ impl Database {
         .bind(i64::from(network.target_spacing_seconds))
         .bind(network.max_supply_zat)
         .bind(network.initial_subsidy_zat)
-        .bind(to_i64(network.halving_interval, "halving interval")?)
-        .bind(to_i64(
-            network.first_halving_height,
-            "first halving height",
-        )?)
+        .bind(halving_interval)
+        .bind(first_halving_height)
         .bind(&network.genesis_hash)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
 
         let row = sqlx::query(
-            "SELECT display_name, symbol, decimals, coinbase_maturity,
+            "SELECT display_name, decimals, coinbase_maturity,
                     target_spacing_seconds, max_supply_zat, initial_subsidy_zat,
                     halving_interval, first_halving_height, genesis_hash
-             FROM networks WHERE network_id = $1",
+             FROM networks WHERE network_id = $1
+             FOR UPDATE",
         )
         .bind(&network.id)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *transaction)
         .await?;
         let stored_genesis: String = row.try_get("genesis_hash")?;
         let stored_decimals: i16 = row.try_get("decimals")?;
-        let stored_symbol: String = row.try_get("symbol")?;
         let stored_display_name: String = row.try_get("display_name")?;
         let stored_maturity: i64 = row.try_get("coinbase_maturity")?;
         let stored_spacing: i64 = row.try_get("target_spacing_seconds")?;
@@ -110,27 +110,40 @@ impl Database {
         let stored_first_halving: i64 = row.try_get("first_halving_height")?;
         if stored_genesis != network.genesis_hash
             || stored_decimals != i16::from(network.decimals)
-            || stored_symbol != network.symbol
             || stored_display_name != network.display_name
             || stored_maturity != i64::from(network.coinbase_maturity)
             || stored_spacing != i64::from(network.target_spacing_seconds)
             || stored_max_supply != network.max_supply_zat
             || stored_initial_subsidy != network.initial_subsidy_zat
-            || stored_halving_interval != to_i64(network.halving_interval, "halving interval")?
-            || stored_first_halving != to_i64(network.first_halving_height, "first halving height")?
+            || stored_halving_interval != halving_interval
+            || stored_first_halving != first_halving_height
         {
             return Err(ExplorerError::Config(format!(
                 "database network identity for {} does not match runtime configuration",
                 network.id
             )));
         }
+
+        // The ticker labels amounts but does not identify a chain. Keep the stored
+        // presentation value aligned with the runtime after validating every
+        // immutable identity and consensus field above.
+        sqlx::query(
+            "UPDATE networks SET symbol = $2
+             WHERE network_id = $1 AND symbol IS DISTINCT FROM $2",
+        )
+        .bind(&network.id)
+        .bind(&network.symbol)
+        .execute(&mut *transaction)
+        .await?;
+
         sqlx::query(
             "INSERT INTO chain_state (network_id, status) VALUES ($1, 'starting')
              ON CONFLICT (network_id) DO NOTHING",
         )
         .bind(&network.id)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
+        transaction.commit().await?;
         Ok(())
     }
 

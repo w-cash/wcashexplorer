@@ -45,11 +45,12 @@ pub enum RpcAuth {
     Cookie(PathBuf),
 }
 
-/// Network identity and consensus display settings.
+/// Network identity, consensus settings, and presentation metadata.
 #[derive(Clone, Debug)]
 pub struct NetworkConfig {
     pub id: String,
     pub display_name: String,
+    /// Mutable presentation ticker; this does not identify the underlying chain.
     pub symbol: String,
     pub decimals: u8,
     pub coinbase_maturity: u32,

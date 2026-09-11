@@ -69,7 +69,8 @@ block and keys witness-dependent records by `(blockHash, witnessHash)`.
 
 PostgreSQL is the sole authority for indexed state. Major table groups are:
 
-- `networks` for immutable network identity and monetary parameters;
+- `networks` for immutable network identity and monetary parameters, plus the
+  mutable presentation ticker;
 - `blocks`, `block_witnesses`, and `transaction_instances` for immutable facts;
 - `canonical_chain` for the currently selected block and witness at each height;
 - `block_transactions`, transparent inputs/outputs, and value-pool snapshots;
@@ -77,9 +78,11 @@ PostgreSQL is the sole authority for indexed state. Major table groups are:
 - `chain_state` for readiness and node/indexer tips; and
 - `reorg_events` for detected and completed canonical replacements.
 
-Network identity is bound on first initialization. Later startup fails if the
-configured genesis, symbol, decimals, maturity, spacing, subsidy, halving, or
-supply cap conflicts with the stored row.
+Network identity and consensus parameters are bound on first initialization.
+Later startup fails if the configured genesis, decimals, maturity, spacing,
+subsidy, halving, or supply cap conflicts with the stored row. The ticker is
+presentation metadata instead: startup synchronizes the stored value to the
+runtime configuration after those immutable fields pass validation.
 
 ZIP-244 transaction identity requires more than a transaction ID because
 authorizing data is not committed in the same way. The schema stores unique
