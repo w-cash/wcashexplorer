@@ -326,7 +326,9 @@ export function BlockTable({
                           ? 'Valid · sources disagree'
                           : parentState === 'not_found'
                             ? 'Valid · parent not observed'
-                            : `Valid · ${parentState.replaceAll('_', ' ')}`
+                            : parentState === 'not_configured'
+                              ? 'Valid · Zcash observer off'
+                              : `Valid · ${parentState.replaceAll('_', ' ')}`
                       : humanize(proofState)}
                   </span>
                 </td>
@@ -398,7 +400,9 @@ function ProofRecord({ block }: { block: BlockSummary }) {
               ? 'Established'
               : block.mergeMining.parentLookupState === 'disagreement'
                 ? 'Disagreement'
-                : 'Not established'
+                : block.mergeMining.parentLookupState === 'not_configured'
+                  ? 'Not applicable'
+                  : 'Not established'
           }
         />
         <EvidenceRow

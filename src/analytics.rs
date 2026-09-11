@@ -202,9 +202,6 @@ async fn merge_mining_stats(
         .fetch_one(&mut *transaction)
         .await?;
     transaction.commit().await?;
-    let anomaly_blocks = row
-        .eligible_child_blocks
-        .saturating_sub(row.fully_verified_blocks);
     let data = MergeMiningStatsView {
         as_of_height: optional_height(chain.indexed_height)?,
         as_of_hash: chain.indexed_hash.clone(),
@@ -220,10 +217,12 @@ async fn merge_mining_stats(
         parent_quorum_agreement_blocks: row.parent_quorum_agreement_blocks,
         best_chain_witness_blocks: row.best_chain_witness_blocks,
         fully_verified_blocks: row.fully_verified_blocks,
-        anomaly_blocks,
+        locally_verified_without_parent_observation_blocks: row
+            .locally_verified_without_parent_observation_blocks,
+        anomaly_blocks: row.anomaly_blocks,
         observation_source_count: row.observation_source_count,
         last_verified_at: row.last_verified_at,
-        scope_notice: "Counts cover every canonical non-genesis Wcash block, not only the current page of recent blocks.".to_owned(),
+        scope_notice: "Counts cover every canonical non-genesis Wcash block. A locally verified Wcash AuxPoW witness is not anomalous when Zcash parent observation is not configured; canonical-parent evidence remains a separate, stronger status.".to_owned(),
     };
     Ok(Json(envelope(&state, data, None, &chain)))
 }
@@ -523,6 +522,8 @@ struct MergeMiningStatsRow {
     parent_quorum_agreement_blocks: i64,
     best_chain_witness_blocks: i64,
     fully_verified_blocks: i64,
+    locally_verified_without_parent_observation_blocks: i64,
+    anomaly_blocks: i64,
     observation_source_count: i64,
     last_verified_at: Option<DateTime<Utc>>,
 }
@@ -544,6 +545,7 @@ pub struct MergeMiningStatsView {
     pub parent_quorum_agreement_blocks: i64,
     pub best_chain_witness_blocks: i64,
     pub fully_verified_blocks: i64,
+    pub locally_verified_without_parent_observation_blocks: i64,
     pub anomaly_blocks: i64,
     pub observation_source_count: i64,
     pub last_verified_at: Option<DateTime<Utc>>,
@@ -760,7 +762,13 @@ const MERGE_MINING_STATS_QUERY: &str = "WITH evidence AS (
             WHERE height > 0 AND parent_lookup_state IN ('unavailable', 'unknown')
         )::BIGINT AS unavailable_parent_blocks,
         COUNT(*) FILTER (
-            WHERE height > 0 AND has_auxpow AND parent_sources_agree IS NOT TRUE
+            WHERE height > 0
+              AND has_auxpow
+              AND parent_lookup_state <> 'not_configured'
+              AND (
+                    parent_lookup_state = 'disagreement'
+                 OR parent_sources_agree IS NOT TRUE
+              )
         )::BIGINT AS disagreement_parent_blocks,
         COUNT(*) FILTER (
             WHERE height > 0 AND parent_sources_agree IS TRUE
@@ -777,6 +785,29 @@ const MERGE_MINING_STATS_QUERY: &str = "WITH evidence AS (
               AND parent_sources_agree IS TRUE
               AND has_canonical_parent
         )::BIGINT AS fully_verified_blocks,
+        COUNT(*) FILTER (
+            WHERE height > 0
+              AND has_auxpow
+              AND exact_witness_state = 'best_chain'
+              AND local_validation_state = 'auxpow_verified'
+              AND parent_lookup_state = 'not_configured'
+        )::BIGINT AS locally_verified_without_parent_observation_blocks,
+        COUNT(*) FILTER (
+            WHERE height > 0
+              AND ((
+                    has_auxpow
+                AND exact_witness_state = 'best_chain'
+                AND local_validation_state = 'auxpow_verified'
+                AND parent_hash_meets_claimed_target IS TRUE
+                AND parent_sources_agree IS TRUE
+                AND has_canonical_parent
+              ) OR (
+                    has_auxpow
+                AND exact_witness_state = 'best_chain'
+                AND local_validation_state = 'auxpow_verified'
+                AND parent_lookup_state = 'not_configured'
+              )) IS NOT TRUE
+        )::BIGINT AS anomaly_blocks,
         COALESCE(MAX(source_count), 0)::BIGINT AS observation_source_count,
         MAX(verified_at) FILTER (WHERE height > 0) AS last_verified_at
     FROM evidence";

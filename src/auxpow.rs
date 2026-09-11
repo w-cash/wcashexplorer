@@ -337,7 +337,13 @@ fn decode_hex(label: &str, value: &str, maximum_bytes: usize) -> Result<Vec<u8>>
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use axum::{Json, Router, routing::post};
+    use serde_json::{Value, json};
+
     use super::*;
+    use crate::config::{RpcAuth, RpcConfig};
 
     #[test]
     fn decodes_wcash_and_bitcoin_style_targets() {
@@ -372,6 +378,91 @@ mod tests {
             classify_observations(&observations),
             (ParentLookupState::Disagreement, false)
         );
+    }
+
+    #[test]
+    fn no_parent_sources_is_explicitly_not_configured() {
+        assert_eq!(
+            classify_observations(&[]),
+            (ParentLookupState::NotConfigured, false)
+        );
+    }
+
+    #[tokio::test]
+    async fn verifies_the_complete_auxpow_witness_without_a_parent_rpc() {
+        async fn wcash_status(Json(request): Json<Value>) -> Json<Value> {
+            assert_eq!(request["jsonrpc"], "2.0");
+            assert_eq!(request["method"], "getauxblockstatus");
+            assert_eq!(
+                request["params"][0],
+                "79cdcea38a54f99a59adddf124490a65de499e5677e693caa14dcf24b5f96007"
+            );
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {"state": "best_chain", "confirmations": 48},
+                "error": null
+            }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback RPC fixture");
+        let address = listener.local_addr().expect("fixture RPC address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/", post(wcash_status)))
+                .await
+                .expect("serve loopback RPC fixture");
+        });
+
+        let raw_block =
+            hex::decode(include_str!("../tests/fixtures/wcash-testnet-block-1.hex").trim())
+                .expect("valid raw block fixture");
+        let solution = include_str!("../tests/fixtures/wcash-testnet-block-1-solution.hex")
+            .trim()
+            .to_owned();
+        let block: RpcBlock = serde_json::from_value(json!({
+            "hash": "79cdcea38a54f99a59adddf124490a65de499e5677e693caa14dcf24b5f96007",
+            "height": 1,
+            "confirmations": 48,
+            "size": raw_block.len(),
+            "time": 1_788_812_824_i64,
+            "bits": "1e008859",
+            "difficulty": 1.0,
+            "nonce": "00".repeat(32),
+            "solution": solution,
+            "merkleroot": "00".repeat(32)
+        }))
+        .expect("valid verbose block fixture");
+        let wcash = ZebraRpc::new(
+            RpcConfig {
+                label: "wcash-fixture".to_owned(),
+                url: format!("http://{address}/")
+                    .parse()
+                    .expect("valid fixture RPC URL"),
+                auth: RpcAuth::None,
+            },
+            Duration::from_secs(2),
+        )
+        .expect("valid fixture RPC client");
+
+        let verified = AuxPowVerifier::new(wcash, Vec::new())
+            .verify(&block, &raw_block)
+            .await
+            .expect("valid Wcash-only AuxPoW verification")
+            .expect("non-genesis proof");
+        assert_eq!(verified.verification_state, "auxpow_verified");
+        assert_eq!(verified.exact_witness_state, "best_chain");
+        assert_eq!(verified.witness_confirmations, Some(48));
+        assert_eq!(
+            verified.parent_lookup_state,
+            ParentLookupState::NotConfigured
+        );
+        assert!(!verified.parent_sources_agree);
+        assert!(verified.parent_observations.is_empty());
+
+        server.abort();
+        let _ = server.await;
     }
 
     #[test]

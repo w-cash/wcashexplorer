@@ -1,7 +1,16 @@
 # Live Wcash Testnet explorer runbook
 
-This runbook deploys one private indexer/API process beside the existing Wcash
-and Zcash Testnet nodes. It does not expose node RPC or PostgreSQL publicly.
+This runbook deploys the primary Wcash-only observer profile used for
+[testnet.wcashexplorer.com](https://testnet.wcashexplorer.com): one private
+Wcash Testnet node, PostgreSQL, one indexer/API process, the web process, and
+Nginx. It independently validates the AuxPoW witness carried by Wcash blocks
+without running a Zcash node. It does not expose node RPC or PostgreSQL
+publicly.
+
+This profile deliberately reports Zcash canonical-chain observation as
+`not_configured`. Operators who require independent evidence that an embedded
+parent is canonical on Zcash Testnet can instead deploy the optional strict
+two-parent profile documented in [`deployment.md`](deployment.md).
 
 ## Host preparation
 
@@ -38,21 +47,43 @@ uncommitted working tree.
 
 ## Configure and start
 
-Copy `deploy/testnet.env.example` to `/etc/wcashexplorer/testnet.env`, owned by
-`root:wcashexplorer` with mode `0640`. Copy the systemd unit to
-`/etc/systemd/system/wcashexplorer-testnet.service`, and install
-`deploy/systemd/wcashexplorer-start` at
-`/opt/wcashexplorer/libexec/wcashexplorer-start` with mode `0755`.
+The explorer repository does not build or install the consensus node. First
+install `wcash-zebrad` from the reviewed Wcash node revision
+[`72038cee`](https://github.com/w-cash/wolf/tree/72038ceef70b297a1ef771177a3f45a88f53474c),
+which is also the AuxPoW dependency revision pinned by this release. Install an
+operator-owned base unit named `wcash-testnet-node.service`; the upstream unit
+source is
+[`zebrad/systemd/zebrad.service`](https://github.com/w-cash/wolf/blob/72038ceef70b297a1ef771177a3f45a88f53474c/zebrad/systemd/zebrad.service).
+The base unit must exist before installing the explorer-specific drop-in below.
 
-The unit waits for PostgreSQL and all three node processes. systemd reads the
-owner-only node cookies and exposes private copies in the explorer's per-service
-credential directory. Restarting a node propagates a restart to the explorer,
-which reloads the new credential. The source cookie modes and ownership are never
-weakened. The unit also restricts IP traffic to localhost.
+Install `deploy/wcash-testnet-explorer-node.toml.example` as
+`/srv/wcash-testnet/config/wcash-testnet.toml`. Replace its documentation-only
+seed with an operator-approved Wcash Testnet peer, and keep its P2P, RPC, and
+lightwallet listeners on loopback. Configure the base unit to run the reviewed
+binary with `-c /srv/wcash-testnet/config/wcash-testnet.toml` under a locked
+service account. Install
+`deploy/systemd/wcash-node-reconnect-delay.conf` as
+`/etc/systemd/system/wcash-testnet-node.service.d/reconnect-delay.conf`. The
+delay avoids repeatedly reconnecting inside the Testnet seed's per-IP cooldown.
+
+Copy `deploy/testnet-wcash-only.env.example` to
+`/etc/wcashexplorer/testnet.env`, owned by `root:wcashexplorer` with mode `0640`.
+Copy `deploy/systemd/wcashexplorer-testnet-wcash-only.service` to
+`/etc/systemd/system/wcashexplorer-testnet.service`, and install
+`deploy/systemd/wcashexplorer-start-wcash-only` at
+`/opt/wcashexplorer/libexec/wcashexplorer-start-wcash-only` with mode `0755`.
+
+The explorer unit waits only for PostgreSQL and the Wcash node. systemd reads
+the owner-only Wcash RPC cookie and exposes a private copy in the explorer's
+per-service credential directory. Restarting the node propagates a restart to
+the explorer, which reloads the new credential. The source cookie mode and
+ownership are never weakened. The unit also restricts IP traffic to localhost.
 
 ```sh
-systemd-analyze verify /etc/systemd/system/wcashexplorer-testnet.service
+systemd-analyze verify /etc/systemd/system/wcash-testnet-node.service \
+  /etc/systemd/system/wcashexplorer-testnet.service
 systemctl daemon-reload
+systemctl enable --now wcash-testnet-node.service
 systemctl enable --now wcashexplorer-testnet.service
 ```
 
@@ -70,7 +101,9 @@ curl --fail --silent 'http://127.0.0.1:8080/api/v1/blocks?limit=5'
 Then verify the indexed tip hash against the Wcash node, open a known block and
 its AuxPoW evidence, open its coinbase transaction, and open the Wcash transparent
 mining address. A Zcash `tm...` parent payout address is not a Wcash address and
-must not be presented as one.
+must not be presented as one. The AuxPoW view must show local verification and
+exact Wcash witness state. It must show parent-chain observation as
+`not_configured`, not as Zcash-canonical, when this Wcash-only profile is active.
 
 For local UI validation, forward the loopback API over SSH and start the web
 development server without preview mode:
@@ -123,7 +156,16 @@ from `/etc/nginx/sites-enabled/`. It must be included from Nginx's `http`
 context, never from inside another `server` block, because it defines shared
 request zones and upstreams. The ingress keeps the browser and read-only API on
 one origin, applies separate request limits, and exposes neither the node RPC
-ports nor PostgreSQL. Validate before reload:
+ports nor PostgreSQL.
+
+When Cloudflare proxies the public hostname, install
+`deploy/nginx/cloudflare-real-ip.conf` as
+`/etc/nginx/conf.d/cloudflare-real-ip.conf`. It restores the client address used
+by access logs and rate limits from `CF-Connecting-IP`, but only for the listed
+Cloudflare source networks. Compare those networks with Cloudflare's official
+IP lists before each infrastructure release; never add an untrusted source
+range. The origin must still use HTTPS and must not rely on this header for
+application authentication. Validate before reload:
 
 ```sh
 systemd-analyze verify /etc/systemd/system/wcashexplorer-web.service
@@ -131,12 +173,18 @@ nginx -t
 systemctl daemon-reload
 systemctl enable --now wcashexplorer-web.service
 systemctl reload nginx
-curl --fail --header 'Host: wcashexplorer.com' http://127.0.0.1/healthz
-curl --fail --header 'Host: wcashexplorer.com' http://127.0.0.1/api/v1/status
+curl --fail --header 'Host: testnet.wcashexplorer.com' http://127.0.0.1/healthz
+curl --fail --header 'Host: testnet.wcashexplorer.com' \
+  http://127.0.0.1/api/v1/status
 ```
 
-Keep DNS away from the origin until those checks, the live API gate, and browser
-QA all pass. Before public DNS cutover, terminate TLS at the edge and use an
-authenticated TLS connection from the edge to the origin. Add HSTS only after
-HTTPS is verified end to end; never announce the plain-HTTP origin as the public
-explorer URL.
+Before enabling public DNS, install a valid origin certificate, verify HTTPS
+end to end, and use Cloudflare's **Full (strict)** SSL mode so the edge validates
+that certificate. Keep DNS away from the origin until the origin checks, live
+API gate, and browser QA all pass. Add HSTS only after HTTPS is verified end to
+end; never announce the plain-HTTP origin as the public explorer URL.
+
+For a dedicated host administered only by SSH keys, review and install
+`deploy/ssh/00-wcashexplorer-hardening.conf` under `/etc/ssh/sshd_config.d/`.
+Run `sshd -t` and confirm a fresh key-authenticated session before reloading
+SSH. Keep the existing session open until that check succeeds.

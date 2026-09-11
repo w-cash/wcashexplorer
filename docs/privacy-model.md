@@ -99,11 +99,13 @@ set it to false for an exactly zero pool.
 
 ## AuxPoW does not weaken transaction privacy by itself
 
-AuxPoW proof data connects a Wcash block to a public Zcash parent block and
-coinbase commitment. That linkage is public mining evidence. It does not reveal
-the hidden recipients or values of Wcash shielded transactions. Pool payout
-systems and network logs may create separate metadata, but they are outside the
-explorer's on-chain view.
+AuxPoW proof data connects a Wcash block to an embedded Zcash parent header and
+coinbase commitment. That linkage is public mining evidence. A separate Zcash
+RPC observation is required to claim that the parent was observed on the Zcash
+canonical chain; the Wcash-only deployment reports that observation as
+`not_configured`. Neither form of evidence reveals the hidden recipients or
+values of Wcash shielded transactions. Pool payout systems and network logs may
+create separate metadata, but they are outside the explorer's on-chain view.
 
 ## Honest interface language
 
