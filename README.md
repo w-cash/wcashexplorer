@@ -10,6 +10,10 @@ The public Testnet explorer is
 is under active development, and the Testnet deployment is not a statement that
 Wcash mainnet is ready. Testnet coins (`TWC`) have no monetary value.
 
+The apex [wcashexplorer.com](https://wcashexplorer.com) is a small static
+network selector. It is deployed independently from the Testnet application so
+an unlabeled apex URL cannot be mistaken for a mainnet explorer.
+
 ## What it provides
 
 - canonical Wcash blocks and transaction instances;
@@ -54,6 +58,7 @@ src/            Rust indexer, AuxPoW verifier, PostgreSQL store, and Axum API
 migrations/     Checksummed PostgreSQL schema migrations
 tests/fixtures/ Real Wcash Testnet AuxPoW fixtures used by verifier tests
 web/            Vinext/React explorer interface
+landing/        Static apex network selector and its dependency-free check
 docs/           Architecture, privacy, and deployment documentation
 ```
 
@@ -117,6 +122,9 @@ cargo clippy --all-targets -- -D warnings
 cd web
 npm run lint
 npm run build
+
+cd ..
+node landing/verify.mjs
 ```
 
 The Rust tests include a real Wcash Testnet block fixture with its serialized

@@ -137,6 +137,9 @@ The primary profile is assembled from these reviewed templates:
 - `deploy/systemd/wcashexplorer-web.service`: standalone web unit;
 - `deploy/nginx/wcashexplorer.conf`: same-origin web/API reverse proxy for
   `testnet.wcashexplorer.com`;
+- `landing/` and `deploy/nginx/wcashexplorer-landing.conf`: dependency-free
+  apex landing page for `wcashexplorer.com` and `www.wcashexplorer.com`, kept
+  separate from the Testnet application;
 - `deploy/nginx/cloudflare-real-ip.conf`: Cloudflare client-IP restoration for
   rate limiting; and
 - `deploy/ssh/00-wcashexplorer-hardening.conf`: key-only SSH baseline.
@@ -147,6 +150,40 @@ policy treats it as private. The older `deploy/testnet.env.example`,
 `deploy/systemd/wcashexplorer-start`, and
 `deploy/systemd/wcashexplorer-testnet.service` files implement the optional
 strict two-parent profile.
+
+### Apex landing page
+
+The apex hostname is intentionally not an alias of the explorer application.
+It serves the static files in `landing/` and links to the explicitly named
+Testnet origin. This keeps Testnet URLs unambiguous and prevents accidental
+publication of explorer routes under an unlabeled hostname.
+
+Install the page and the existing Wcash mark with root ownership and read-only
+permissions:
+
+```sh
+install -d -o root -g root -m 0755 /var/www/wcashexplorer-landing
+install -o root -g root -m 0644 landing/index.html landing/styles.css \
+  web/public/wcash-mark.svg web/public/og.png \
+  /var/www/wcashexplorer-landing/
+```
+
+Create `/var/lib/letsencrypt/.well-known/acme-challenge`, install
+`deploy/nginx/wcashexplorer-landing-bootstrap.conf` as the enabled landing
+vhost, validate Nginx, and issue an independent apex certificate:
+
+```sh
+certbot certonly --webroot -w /var/lib/letsencrypt \
+  --cert-name wcashexplorer.com \
+  -d wcashexplorer.com -d www.wcashexplorer.com \
+  --non-interactive --agree-tos
+```
+
+Replace the bootstrap vhost with
+`deploy/nginx/wcashexplorer-landing.conf`, validate with `nginx -t`, and reload.
+The production vhost retains the ACME webroot on HTTP and HTTPS for unattended
+renewal. It uses a separate certificate lineage and never replaces the Testnet
+virtual host or its certificate.
 
 ### RPC authentication
 
