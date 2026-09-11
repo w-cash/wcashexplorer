@@ -104,7 +104,7 @@ Important identity and policy fields:
 - `RUN_MIGRATIONS` and `RUN_INDEXER`.
 
 The checked-in testnet defaults encode eight decimals, 75-second target spacing,
-a 6.25 tWEC initial subsidy, first halving at height 1,680,001, and a 21 million
+a 6.25 TWC initial subsidy, first halving at height 1,680,001, and a 21 million
 maximum issuance schedule. They are validated at startup. Do not copy these
 values into a mainnet deployment without a separate release and review.
 

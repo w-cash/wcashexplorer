@@ -36,7 +36,7 @@ async fn run_live_api_test() -> Result<()> {
 
     let status = get_json(&client, base_url, "/api/v1/status").await?;
     ensure!(status["data"]["network"] == "testnet");
-    ensure!(status["data"]["symbol"] == "tWEC");
+    ensure!(status["data"]["symbol"] == "TWC");
     ensure!(status["data"]["maxSupply"]["decimal"] == "21000000.00000000");
     ensure!(status["data"]["initialSubsidy"]["decimal"] == "6.25000000");
     ensure!(status["data"]["targetSpacingSeconds"] == 75);

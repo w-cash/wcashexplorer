@@ -257,7 +257,7 @@ fn test_network() -> NetworkConfig {
     NetworkConfig {
         id: "testnet".to_owned(),
         display_name: "Wcash Testnet".to_owned(),
-        symbol: "tWEC".to_owned(),
+        symbol: "TWC".to_owned(),
         decimals: 8,
         coinbase_maturity: 100,
         target_spacing_seconds: 75,

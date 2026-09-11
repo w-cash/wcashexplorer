@@ -5,7 +5,7 @@ Rust indexer and HTTP API with a responsive web interface, and records the
 evidence that links a Wcash AuxPoW block to its Zcash Testnet parent block.
 
 This repository is under active development. It has not been deployed publicly,
-and it is not a statement that Wcash mainnet is ready. Testnet coins (`tWEC`)
+and it is not a statement that Wcash mainnet is ready. Testnet coins (`TWC`)
 have no monetary value.
 
 ## What it provides
