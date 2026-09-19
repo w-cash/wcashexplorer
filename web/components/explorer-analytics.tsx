@@ -22,6 +22,7 @@ import {
 import { middleEllipsis, relativeTime, trimAmount } from './dashboard';
 import { type ChartPoint, ExplorerLineChart } from './explorer-chart';
 import { SearchBox } from './search-box';
+import { explorerNetwork } from '@/lib/network';
 
 type Resource<T> = {
   envelope: Envelope<T> | null;
@@ -214,7 +215,7 @@ export function NetworkAnalytics() {
           <div className="chart-grid">
             <ExplorerLineChart
               title="Block interval"
-              description={`Canonical time between blocks through height ${network.asOfHeight ?? '—'}. Testnet bursts and pauses are shown as recorded.`}
+              description={`Canonical time between blocks through height ${network.asOfHeight ?? '—'}.${explorerNetwork === 'testnet' ? ' Testnet bursts and pauses are shown as recorded.' : ''}`}
               points={spacingPoints}
               series={[
                 {

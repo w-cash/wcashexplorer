@@ -1,0 +1,45 @@
+[Unit]
+Description=Wcash Mainnet explorer indexer and API (Wcash-only AuxPoW evidence)
+Documentation=https://github.com/w-cash/wcashexplorer
+Wants=network-online.target
+Requires=postgresql.service wcash-mainnet-node.service
+After=network-online.target postgresql.service wcash-mainnet-node.service
+PartOf=wcash-mainnet-node.service
+
+[Service]
+Type=simple
+User=wcashexplorer-mainnet
+Group=wcashexplorer-mainnet
+EnvironmentFile=/etc/wcashexplorer/mainnet.env
+LoadCredential=wcash_rpc:/run/wcash-mainnet-rpc/.cookie
+ExecStart=/opt/wcashexplorer-mainnet/libexec/wcashexplorer-start-mainnet
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

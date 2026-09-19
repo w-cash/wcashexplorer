@@ -10,6 +10,10 @@ pub const PARENT_EVIDENCE_REFRESH_INTERVAL_SECONDS: i64 = 30;
 /// Strict readiness tolerates one missed tip refresh before becoming unavailable.
 pub const PARENT_EVIDENCE_MAX_AGE_SECONDS: i64 = PARENT_EVIDENCE_REFRESH_INTERVAL_SECONDS * 2;
 
+/// Frozen Wcash Mainnet genesis; a different revision must not silently populate the public explorer.
+pub const WCASH_MAINNET_GENESIS_HASH: &str =
+    "5bae12c8662a577b04ce1591af1a137c128f0cb51018a5f1622d861d1bb6fc48";
+
 /// Runtime configuration sourced from environment variables.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -103,6 +107,7 @@ impl Config {
             ),
         };
         validate_hex_id("WCASH_GENESIS_HASH", &network.genesis_hash)?;
+        validate_mainnet_genesis(&network)?;
         if network.decimals > 18 {
             return Err(ExplorerError::Config(
                 "WCASH_DECIMALS must be at most 18".to_owned(),
@@ -273,6 +278,15 @@ fn validate_hex_id(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_mainnet_genesis(network: &NetworkConfig) -> Result<()> {
+    if network.id == "mainnet" && network.genesis_hash != WCASH_MAINNET_GENESIS_HASH {
+        return Err(ExplorerError::Config(format!(
+            "Wcash Mainnet requires genesis {WCASH_MAINNET_GENESIS_HASH}"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_parent_configuration(
     run_indexer: bool,
     require_parent_quorum: bool,
@@ -280,7 +294,7 @@ fn validate_parent_configuration(
 ) -> Result<()> {
     if run_indexer && require_parent_quorum && parent_count < 2 {
         return Err(ExplorerError::Config(
-            "RUN_INDEXER requires two distinct Zcash Testnet RPC endpoints when REQUIRE_PARENT_QUORUM is enabled".to_owned(),
+            "RUN_INDEXER requires two distinct Zcash parent RPC endpoints when REQUIRE_PARENT_QUORUM is enabled".to_owned(),
         ));
     }
     Ok(())
@@ -289,6 +303,30 @@ fn validate_parent_configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mainnet_accepts_only_the_frozen_wcash_genesis() {
+        let mut network = NetworkConfig {
+            id: "mainnet".to_owned(),
+            display_name: "Wcash Mainnet".to_owned(),
+            symbol: "WEC".to_owned(),
+            decimals: 8,
+            coinbase_maturity: 100,
+            target_spacing_seconds: 75,
+            max_supply_zat: 2_100_000_000_000_000,
+            initial_subsidy_zat: 625_000_000,
+            halving_interval: 1_680_000,
+            first_halving_height: 1_680_001,
+            genesis_hash: WCASH_MAINNET_GENESIS_HASH.to_owned(),
+            parent_explorer_block_url: String::new(),
+            parent_explorer_tx_url: String::new(),
+        };
+        assert!(validate_mainnet_genesis(&network).is_ok());
+        network.genesis_hash = "00".repeat(32);
+        assert!(validate_mainnet_genesis(&network).is_err());
+        network.id = "testnet".to_owned();
+        assert!(validate_mainnet_genesis(&network).is_ok());
+    }
 
     #[test]
     fn wcash_only_indexing_is_allowed_only_when_parent_quorum_is_optional() {

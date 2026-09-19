@@ -1,18 +1,22 @@
 # WcashExplorer
 
-WcashExplorer is a read-only block explorer for **Wcash Testnet**. It combines a
+WcashExplorer is a read-only block explorer for **Wcash Mainnet and Testnet**. It combines a
 Rust indexer and HTTP API with a responsive web interface, independently
 validates each on-chain Wcash AuxPoW witness, and can optionally record
-observations of the corresponding Zcash Testnet parent block.
+observations of the corresponding Zcash parent block. The default configuration
+remains Testnet; Mainnet requires an explicit, isolated profile.
 
 The public Testnet explorer is
 [testnet.wcashexplorer.com](https://testnet.wcashexplorer.com). This repository
-is under active development, and the Testnet deployment is not a statement that
-Wcash mainnet is ready. Testnet coins (`TWC`) have no monetary value.
+is under active development. Testnet coins (`TWC`) have no monetary value;
+Mainnet amounts use `WEC`.
 
-The apex [wcashexplorer.com](https://wcashexplorer.com) is a small static
-network selector. It is deployed independently from the Testnet application so
-an unlabeled apex URL cannot be mistaken for a mainnet explorer.
+The repository now includes a separately configured Wcash Mainnet explorer
+profile for [wcashexplorer.com](https://wcashexplorer.com). The Mainnet
+application must not replace the apex landing until its node identity, indexer,
+and web/API network checks pass. See the
+[Mainnet runbook](docs/mainnet-wcash-only-runbook.md). Testnet remains on its
+own origin, database, and node.
 
 ## What it provides
 
@@ -23,7 +27,7 @@ an unlabeled apex URL cannot be mistaken for a mainnet explorer.
 - reorganization-aware indexing and recorded reorg events;
 - raw block retrieval and exact AuxPoW witness identity;
 - local AuxPoW verification and exact Wcash witness acceptance;
-- optional observations from configured Zcash Testnet RPC nodes;
+- optional observations from configured Zcash RPC nodes;
 - liveness and strict readiness endpoints for operators.
 
 The explorer does **not** reveal shielded senders, recipients, note values,
@@ -40,7 +44,7 @@ Merge-mining evidence is intentionally split into distinct claims:
    and solution bytes; a non-genesis block is indexed only when that witness is
    reported as `best_chain`.
 3. **Optional parent-chain observation** checks the embedded parent header and
-   exact parent hash against each configured Zcash Testnet node. When no parent
+   exact parent hash against each configured Zcash node. When no parent
    observer is configured, the API reports this layer as `not_configured`; that
    does not invalidate the independently verified on-chain Wcash proof.
    Agreement means only that the configured observations agree. It does not
@@ -67,8 +71,8 @@ docs/           Architecture, privacy, and deployment documentation
 - Rust 1.88 or newer;
 - PostgreSQL 17 (the development Compose file supplies it);
 - Node.js 22.13 or newer for the web interface;
-- one Wcash Testnet RPC endpoint; and
-- optionally, two distinct Zcash Testnet RPC endpoints for strict
+- one Wcash RPC endpoint for the selected Wcash network; and
+- optionally, two distinct Zcash RPC endpoints for strict
   parent-observation quorum.
 
 The Wcash RPC service, and any optional parent RPC services, must be fully

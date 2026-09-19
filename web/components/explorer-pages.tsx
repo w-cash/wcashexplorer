@@ -671,22 +671,22 @@ function AuxPowDetail({ auxpow }: { auxpow: AuxPowEvidence }) {
           <Record label="Verifier note" value={auxpow.meaning} />
         </dl>
         <div className="mt-5 flex flex-wrap gap-2">
-          <ExternalEvidence
+          {auxpow.parentBlockUrl ? <ExternalEvidence
             href={auxpow.parentBlockUrl}
             label={
               auxpow.parentLookupState === 'canonical'
                 ? 'Open observed Zcash block'
                 : 'Search Zcash parent hash'
             }
-          />
-          <ExternalEvidence
+          /> : null}
+          {auxpow.parentCoinbaseTxUrl ? <ExternalEvidence
             href={auxpow.parentCoinbaseTxUrl}
             label={
               auxpow.parentLookupState === 'canonical'
                 ? 'Open observed coinbase'
                 : 'Search parent coinbase'
             }
-          />
+          /> : null}
         </div>
       </div>
 

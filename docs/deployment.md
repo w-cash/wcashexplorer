@@ -1,8 +1,9 @@
 # Deployment Guide
 
 This guide describes the public Wcash Testnet explorer profile used at
-[testnet.wcashexplorer.com](https://testnet.wcashexplorer.com). It is not
-approved for Wcash mainnet use.
+[testnet.wcashexplorer.com](https://testnet.wcashexplorer.com). For the isolated
+Mainnet profile, use [the Mainnet runbook](mainnet-wcash-only-runbook.md);
+do not copy the Testnet configuration into a Mainnet service.
 
 ## Production-shaped topology
 
@@ -350,9 +351,6 @@ hostnames, or database URLs into logs or metrics labels.
 
 ## Current release boundary
 
-This repository currently targets the public Wcash Testnet explorer at
-[testnet.wcashexplorer.com](https://testnet.wcashexplorer.com). Production
-retention policy, optional independent parent-source operations, load testing,
-disaster-recovery rehearsal, and a separate mainnet release review remain
-deployment work. Do not describe the Testnet service or source tree as a
-mainnet-ready explorer.
+The Testnet deployment remains independent of the Mainnet profile. Both need
+production retention, load, and disaster-recovery checks before their operation
+can be described as hardened. Testnet success is not a Mainnet readiness claim.

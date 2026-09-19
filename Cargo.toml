@@ -29,12 +29,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = { version = "2.5", features = ["serde"] }
 uuid = { version = "1.18", features = ["serde", "v4"] }
-wcash-zcash-aux = { git = "https://github.com/w-cash/wolf", rev = "72038ceef70b297a1ef771177a3f45a88f53474c", features = ["zebra"] }
-zebra-chain = { git = "https://github.com/w-cash/wolf", rev = "72038ceef70b297a1ef771177a3f45a88f53474c" }
+wcash-zcash-aux = { git = "https://github.com/w-cash/wolf", rev = "45393319d24c3c3181f98d503c97a315661b59af", features = ["zebra"] }
+zebra-chain = { git = "https://github.com/w-cash/wolf", rev = "45393319d24c3c3181f98d503c97a315661b59af", features = ["wcash-consensus"] }
 
 [patch.crates-io]
-zcash_primitives = { git = "https://github.com/w-cash/wolf", rev = "72038ceef70b297a1ef771177a3f45a88f53474c" }
-zcash_protocol = { git = "https://github.com/w-cash/wolf", rev = "72038ceef70b297a1ef771177a3f45a88f53474c" }
+zcash_primitives = { git = "https://github.com/w-cash/wolf", rev = "45393319d24c3c3181f98d503c97a315661b59af" }
+zcash_protocol = { git = "https://github.com/w-cash/wolf", rev = "45393319d24c3c3181f98d503c97a315661b59af" }
 
 [dev-dependencies]
 pretty_assertions = "1.4"

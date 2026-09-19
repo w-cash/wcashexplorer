@@ -1,3 +1,5 @@
+import { explorerNetwork, networkName, networkSymbol } from './network';
+
 export type Amount = {
   zatoshi: string;
   decimal: string;
@@ -131,8 +133,8 @@ export type AuxPowEvidence = {
   parentLookupState: string;
   parentSourcesAgree: boolean;
   verifiedAt: string;
-  parentBlockUrl: string;
-  parentCoinbaseTxUrl: string;
+  parentBlockUrl: string | null;
+  parentCoinbaseTxUrl: string | null;
   observations: ParentObservation[];
   meaning: string;
 };
@@ -389,8 +391,8 @@ export const unavailableDashboard: DashboardData = {
   source: 'unavailable',
   status: {
     data: {
-      networkName: 'Wcash Testnet',
-      symbol: 'TWC',
+      networkName,
+      symbol: networkSymbol,
       status: 'unavailable',
       indexedHeight: null,
       nodeHeight: null,
@@ -399,16 +401,16 @@ export const unavailableDashboard: DashboardData = {
       difficulty: null,
       observedSpacingSeconds: null,
       targetSpacingSeconds: 75,
-      totalIssued: { zatoshi: '0', decimal: '0.00000000', symbol: 'TWC' },
+      totalIssued: { zatoshi: '0', decimal: '0.00000000', symbol: networkSymbol },
       maxSupply: {
         zatoshi: '2100000000000000',
         decimal: '21000000.00000000',
-        symbol: 'TWC',
+        symbol: networkSymbol,
       },
       initialSubsidy: {
         zatoshi: '625000000',
         decimal: '6.25000000',
-        symbol: 'TWC',
+        symbol: networkSymbol,
       },
       nextHalvingHeight: 1_680_001,
       coinbaseMaturity: 100,
@@ -418,7 +420,7 @@ export const unavailableDashboard: DashboardData = {
       indexedHeight: null,
       nodeHeight: null,
       freshnessSeconds: null,
-      network: 'testnet',
+      network: explorerNetwork,
     },
   },
   blocks: {
@@ -427,12 +429,13 @@ export const unavailableDashboard: DashboardData = {
       indexedHeight: null,
       nodeHeight: null,
       freshnessSeconds: null,
-      network: 'testnet',
+      network: explorerNetwork,
     },
   },
 };
 
 export const previewEnabled =
+  explorerNetwork === 'testnet' &&
   process.env.NEXT_PUBLIC_EXPLORER_PREVIEW === 'true';
 
 export const previewDashboard: DashboardData = {
@@ -505,7 +508,11 @@ export async function api<T>(
     },
   );
   if (!response.ok) throw new ExplorerApiError(response.status);
-  return (await response.json()) as Envelope<T>;
+  const envelope = (await response.json()) as Envelope<T>;
+  if (envelope.meta?.network !== explorerNetwork) {
+    throw new Error(`Explorer API network mismatch: expected ${explorerNetwork}`);
+  }
+  return envelope;
 }
 
 export async function loadDashboard(

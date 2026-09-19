@@ -1400,8 +1400,8 @@ fn openapi_schemas() -> Value {
                     "parentLookupState": {"type": "string"},
                     "parentSourcesAgree": {"type": "boolean"},
                     "verifiedAt": {"$ref": "#/components/schemas/DateTime"},
-                    "parentBlockUrl": {"type": "string", "format": "uri"},
-                    "parentCoinbaseTxUrl": {"type": "string", "format": "uri"},
+                    "parentBlockUrl": nullable(json!({"type": "string", "format": "uri"})),
+                    "parentCoinbaseTxUrl": nullable(json!({"type": "string", "format": "uri"})),
                     "observations": {"type": "array", "items": {"$ref": "#/components/schemas/ParentObservation"}},
                     "meaning": {"type": "string"}
                 }
@@ -1641,6 +1641,10 @@ async fn find_block(state: &AppState, id: &str) -> Result<BlockDetailRow> {
         .ok_or(ExplorerError::NotFound)
 }
 
+fn external_evidence_url(template: &str, marker: &str, value: &str) -> Option<String> {
+    (!template.is_empty()).then(|| template.replace(marker, value))
+}
+
 async fn load_auxpow(
     state: &AppState,
     block_hash: &str,
@@ -1665,14 +1669,16 @@ async fn load_auxpow(
     .bind(witness_hash)
     .fetch_all(state.database.pool())
     .await?;
-    let parent_block_url = state
-        .network
-        .parent_explorer_block_url
-        .replace("{hash}", &row.parent_block_hash);
-    let parent_coinbase_tx_url = state
-        .network
-        .parent_explorer_tx_url
-        .replace("{txid}", &row.parent_coinbase_txid);
+    let parent_block_url = external_evidence_url(
+        &state.network.parent_explorer_block_url,
+        "{hash}",
+        &row.parent_block_hash,
+    );
+    let parent_coinbase_tx_url = external_evidence_url(
+        &state.network.parent_explorer_tx_url,
+        "{txid}",
+        &row.parent_coinbase_txid,
+    );
     Ok(Some(AuxPowView {
         proof_version: row.proof_version,
         proof_size: row.proof_size,
@@ -1899,7 +1905,9 @@ fn validate_address(value: &str, config: &NetworkConfig) -> Result<String> {
     let network = match config.id.as_str() {
         "testnet" => Network::new_wcash_testnet(),
         "regtest" => Network::new_wcash_regtest(),
-        "mainnet" => Network::Mainnet,
+        "mainnet" => Network::try_new_wcash_mainnet().map_err(|error| {
+            ExplorerError::Config(format!("Wcash Mainnet profile is unavailable: {error}"))
+        })?,
         id => {
             return Err(ExplorerError::Config(format!(
                 "unsupported Wcash address network {id}"
@@ -2337,8 +2345,8 @@ pub struct AuxPowView {
     pub parent_lookup_state: String,
     pub parent_sources_agree: bool,
     pub verified_at: DateTime<Utc>,
-    pub parent_block_url: String,
-    pub parent_coinbase_tx_url: String,
+    pub parent_block_url: Option<String>,
+    pub parent_coinbase_tx_url: Option<String>,
     pub observations: Vec<ParentObservationView>,
     pub meaning: String,
 }
@@ -2831,6 +2839,7 @@ const ADDRESS_ACTIVITY_QUERY: &str = "WITH owned_outputs AS MATERIALIZED (
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zebra_chain::parameters::NetworkKind;
 
     fn network() -> NetworkConfig {
         NetworkConfig {
@@ -2848,6 +2857,37 @@ mod tests {
             parent_explorer_block_url: "https://example.invalid/block/{hash}".to_owned(),
             parent_explorer_tx_url: "https://example.invalid/tx/{txid}".to_owned(),
         }
+    }
+
+    #[test]
+    fn mainnet_addresses_use_wcash_namespace_and_reject_other_chains() {
+        let mut config = network();
+        config.id = "mainnet".to_owned();
+        config.genesis_hash = crate::config::WCASH_MAINNET_GENESIS_HASH.to_owned();
+
+        let address = TransparentAddress::from_pub_key_hash(NetworkKind::Mainnet, [7; 20]);
+        let wcash = address
+            .encode_wcash(&Network::try_new_wcash_mainnet().expect("frozen mainnet"))
+            .expect("Wcash mainnet address");
+        assert_eq!(
+            validate_address(&wcash, &config).expect("valid Wcash address"),
+            wcash
+        );
+        assert!(validate_address(&address.to_string(), &config).is_err());
+
+        let testnet_address = TransparentAddress::from_pub_key_hash(NetworkKind::Testnet, [7; 20])
+            .encode_wcash(&Network::new_wcash_testnet())
+            .expect("Wcash testnet address");
+        assert!(validate_address(&testnet_address, &config).is_err());
+    }
+
+    #[test]
+    fn external_parent_links_can_be_disabled_without_disabling_local_auxpow() {
+        assert_eq!(external_evidence_url("", "{hash}", "abcd"), None);
+        assert_eq!(
+            external_evidence_url("https://example.invalid/block/{hash}", "{hash}", "abcd"),
+            Some("https://example.invalid/block/abcd".to_owned())
+        );
     }
 
     #[test]

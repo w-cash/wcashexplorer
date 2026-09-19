@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Search } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { explorerNetwork } from '@/lib/network';
 
 const navigation = [
   { href: '/blocks', label: 'Blocks' },
@@ -51,11 +52,10 @@ export function ExplorerShell({ children }: { children: ReactNode }) {
             </span>
           </Link>
           <span className="rounded border border-[var(--border)] px-1.5 py-1 text-[0.64rem] font-semibold text-[var(--muted)] sm:px-2 sm:text-[0.66rem]">
-            Testnet
-            <span className="hidden sm:inline">
-              {' '}
-              · coins have no monetary value
-            </span>
+            {explorerNetwork === 'mainnet' ? 'Mainnet' : 'Testnet'}
+            {explorerNetwork === 'testnet' ? (
+              <span className="hidden sm:inline"> · coins have no monetary value</span>
+            ) : null}
           </span>
           <nav
             aria-label="Main navigation"
@@ -75,6 +75,17 @@ export function ExplorerShell({ children }: { children: ReactNode }) {
               );
             })}
           </nav>
+          <a
+            href={
+              explorerNetwork === 'mainnet'
+                ? 'https://testnet.wcashexplorer.com/'
+                : 'https://wcashexplorer.com/'
+            }
+            className="hidden text-xs font-medium text-[var(--muted)] hover:text-[var(--text)] sm:inline"
+            aria-label={`Switch to Wcash ${explorerNetwork === 'mainnet' ? 'Testnet' : 'Mainnet'} explorer`}
+          >
+            {explorerNetwork === 'mainnet' ? 'Testnet ↗' : 'Mainnet ↗'}
+          </a>
           <Link
             href="/#search"
             className="ml-auto flex min-h-9 min-w-9 items-center justify-center rounded border border-[var(--border)] text-[var(--muted)] hover:border-[var(--border-strong)] hover:text-[var(--text)] lg:ml-1"
@@ -101,6 +112,18 @@ export function ExplorerShell({ children }: { children: ReactNode }) {
             );
           })}
         </nav>
+        <div className="border-t border-[var(--border)] px-4 py-2 text-right text-xs sm:hidden">
+          <a
+            href={
+              explorerNetwork === 'mainnet'
+                ? 'https://testnet.wcashexplorer.com/'
+                : 'https://wcashexplorer.com/'
+            }
+            className="text-[var(--muted)] hover:text-[var(--text)]"
+          >
+            Switch to {explorerNetwork === 'mainnet' ? 'Testnet' : 'Mainnet'} ↗
+          </a>
+        </div>
       </header>
       <main
         id="content"
@@ -110,7 +133,7 @@ export function ExplorerShell({ children }: { children: ReactNode }) {
       </main>
       <footer className="border-t border-[var(--border)]">
         <div className="mx-auto flex max-w-[1280px] flex-col justify-between gap-2 px-4 py-6 text-xs text-[var(--faint)] sm:flex-row sm:px-6">
-          <span>Wcash Testnet explorer</span>
+          <span>Wcash {explorerNetwork === 'mainnet' ? 'Mainnet' : 'Testnet'} explorer</span>
           <span>
             Shielded identities and balances are not public chain data.
           </span>

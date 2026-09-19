@@ -12,6 +12,7 @@ import {
   unavailableDashboard,
 } from '@/lib/explorer-data';
 import { SearchBox } from './search-box';
+import { networkName } from '@/lib/network';
 
 export function Dashboard() {
   const [dashboard, setDashboard] = useState<DashboardData>(
@@ -68,7 +69,7 @@ export function Dashboard() {
     <div className="space-y-6">
       <section className="page-intro">
         <div>
-          <div className="eyebrow">Wcash Testnet</div>
+          <div className="eyebrow">{networkName}</div>
           <h1 className="page-title">Block explorer</h1>
           <p className="page-description">
             Search blocks, transactions, and transparent addresses.

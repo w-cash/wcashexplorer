@@ -1,0 +1,33 @@
+[Unit]
+Description=Wcash Mainnet observer node for WcashExplorer
+Documentation=https://github.com/w-cash/wolf
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=wcash-mainnet
+Group=wcash-mainnet
+RuntimeDirectory=wcash-mainnet-rpc
+RuntimeDirectoryMode=0700
+ExecStart=/opt/wcash-mainnet/releases/45393319d24c3c3181f98d503c97a315661b59af/wcash-zebrad -c /srv/wcash-mainnet/config/wcash-mainnet.toml start
+Restart=on-failure
+RestartSec=15s
+TimeoutStopSec=90s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/wcash-mainnet /run/wcash-mainnet-rpc
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

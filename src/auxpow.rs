@@ -10,7 +10,7 @@ use crate::{
 };
 
 const WITNESS_HASH_DOMAIN: &[u8] = b"WcashExplorer/AuxPoW-witness/v1\0";
-const VERIFIER_VERSION: &str = "wcash-zcash-aux@72038cee";
+const VERIFIER_VERSION: &str = "wcash-zcash-aux@45393319";
 const SOLUTION_OFFSET: usize = 140;
 
 /// Performs local consensus verification plus exact Wcash and parent-chain lookups.

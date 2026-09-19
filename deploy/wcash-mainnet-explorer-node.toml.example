@@ -1,0 +1,27 @@
+# Private Wcash Mainnet observer. Its only upstream is the Wcash peer supplied
+# by the launch operator; it does not download a Zcash Mainnet chain.
+[network]
+network = "WcashMainnet"
+listen_addr = "127.0.0.1:48233"
+initial_mainnet_peers = ["mainnet.zecwec.com:48233"]
+initial_testnet_peers = []
+cache_dir = "/srv/wcash-mainnet/wcash-peers"
+max_connections_per_ip = 1
+
+[state]
+cache_dir = "/srv/wcash-mainnet/wcash-cache"
+ephemeral = false
+
+[rpc]
+listen_addr = "127.0.0.1:48232"
+lightwalletd_listen_addr = "127.0.0.1:48234"
+cookie_dir = "/run/wcash-mainnet-rpc"
+enable_cookie_auth = true
+debug_force_finished_sync = false
+
+[mining]
+internal_miner = false
+extra_coinbase_data = "WcashMainnet"
+
+[tracing]
+filter = "info"
