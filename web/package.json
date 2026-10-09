@@ -12,6 +12,7 @@
     "start": "wrangler dev --config dist/server/wrangler.json",
     "lint": "oxlint",
     "format": "oxfmt",
+    "test": "node --test lib/*.test.ts",
     "verify:standalone": "node scripts/verify-standalone.mjs"
   },
   "dependencies": {

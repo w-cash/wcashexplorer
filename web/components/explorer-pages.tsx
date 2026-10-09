@@ -45,6 +45,7 @@ import {
   WcashValuePools,
 } from './explorer-analytics';
 import { SearchBox } from './search-box';
+import { formatEquihashStratumDifficulty } from '@/lib/difficulty';
 
 type Resource<T> = {
   envelope: Envelope<T> | null;
@@ -423,8 +424,16 @@ export function NetworkPage() {
                   mono
                 />
                 <Record
-                  label="Difficulty"
+                  label="Wcash consensus difficulty"
                   value={network.difficulty ?? 'Unavailable'}
+                  mono
+                />
+                <Record
+                  label="Zcash/Equihash Stratum equivalent"
+                  value={
+                    formatEquihashStratumDifficulty(network.difficulty) ??
+                    'Unavailable'
+                  }
                   mono
                 />
               </dl>
@@ -497,7 +506,19 @@ function BlockDetailView({ block }: { block: BlockDetail }) {
             value={`${block.sizeBytes.toLocaleString()} bytes`}
             mono
           />
-          <Record label="Difficulty" value={block.difficulty} mono />
+          <Record
+            label="Wcash consensus difficulty"
+            value={block.difficulty}
+            mono
+          />
+          <Record
+            label="Zcash/Equihash Stratum equivalent"
+            value={
+              formatEquihashStratumDifficulty(block.difficulty) ??
+              'Unavailable'
+            }
+            mono
+          />
           <Record label="Compact target" value={block.bits} mono />
           <Record
             label="Transactions"

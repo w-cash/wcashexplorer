@@ -13,6 +13,7 @@ import {
 } from '@/lib/explorer-data';
 import { SearchBox } from './search-box';
 import { networkName } from '@/lib/network';
+import { formatEquihashStratumDifficulty } from '@/lib/difficulty';
 
 export function Dashboard() {
   const [dashboard, setDashboard] = useState<DashboardData>(
@@ -64,6 +65,7 @@ export function Dashboard() {
     dashboard.source === 'live' &&
     latestBlockAgeSeconds !== null &&
     latestBlockAgeSeconds > staleAfterSeconds;
+  const stratumDifficulty = formatEquihashStratumDifficulty(status.difficulty);
 
   return (
     <div className="space-y-6">
@@ -150,9 +152,13 @@ export function Dashboard() {
           }
         />
         <Metric
-          label="Difficulty"
+          label="Wcash difficulty"
           value={status.difficulty ?? '—'}
-          foot={`${status.targetSpacingSeconds}s target`}
+          foot={
+            stratumDifficulty
+              ? `Stratum ${stratumDifficulty} · ${status.targetSpacingSeconds}s target`
+              : `${status.targetSpacingSeconds}s target`
+          }
         />
         <Metric
           label="Avg. block time"
