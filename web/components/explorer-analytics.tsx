@@ -231,13 +231,13 @@ export function NetworkAnalytics() {
               }}
             />
             <ExplorerLineChart
-              title="Mining difficulty"
-              description={`Canonical compact-target difficulty through height ${network.asOfHeight ?? '—'}. This is not a hash-rate estimate.`}
+              title="Wcash consensus difficulty"
+              description={`Canonical compact-target difficulty through height ${network.asOfHeight ?? '—'}, measured against the Wcash PoW limit. Equihash Stratum software uses a different diff-1 scale.`}
               points={difficultyPoints}
               series={[
                 {
                   key: 'difficulty',
-                  label: 'Difficulty',
+                  label: 'Wcash difficulty',
                   color: 'var(--info)',
                 },
               ]}
