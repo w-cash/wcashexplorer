@@ -9,7 +9,7 @@ query, or download Zcash Mainnet. Parent canonical-chain observation is
 
 ## Hard identity gate
 
-- Build the Mainnet node from Wolf revision `45393319d24c3c3181f98d503c97a315661b59af`
+- Build the Mainnet node from Wolf revision `9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a`
   or a reviewed descendant of genesis commit `8187216f4fe4d337c2f441c84193081a2143436d`
   with the **same genesis hash**.
 - Expected Wcash Mainnet genesis:
@@ -86,3 +86,28 @@ The Mainnet artifact must not use `NEXT_PUBLIC_EXPLORER_PREVIEW=true`.
 If the node's chain/genesis or the web API network differs, stop before the
 apex cutover. If the apex cutover fails, restore only the old apex vhost and
 reload Nginx; leave Testnet running throughout.
+
+## NU7 parent compatibility
+
+Build the indexer with its committed lockfile. Its AuxPoW verifier is pinned to
+Wolf `9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a` and selects parent coinbase
+rules from the frozen Wcash Mainnet profile at each child block height. Legacy
+proofs remain valid; official NU7 parent coinbases become valid at WEC height
+51,350. Re-indexing a historical block or rolling back below that height uses
+legacy rules again. Testnet remains legacy-only. This does not change WEC's
+75-second interval or the database schema.
+
+The Wcash node and explorer verifier both need compatible releases. Updating
+only the node does not update the indexer's in-process verifier. Preserve the
+existing database, environment, RPC cookie path and service dependencies. The
+indexer unit uses `PartOf=wcash-mainnet-node.service` and loads a cookie as a
+systemd credential; after a node restart, restart/verify the paired indexer so
+it receives the current cookie. Check node chain/genesis, matching canonical
+tips, indexing lag, exact-witness verification, and both readiness endpoints.
+Do not add a local ZEC node or change the Wcash-only parent-observer settings.
+
+Before activation, rollback can restore the previous binary with the same
+configuration and database. Once NU7 witnesses appear, the legacy verifier
+cannot index them; use a compatible release rather than rolling back to the
+old verifier. No PostgreSQL migration or web rebuild is required for this
+compatibility patch.

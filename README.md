@@ -68,7 +68,7 @@ docs/           Architecture, privacy, and deployment documentation
 
 ## Requirements
 
-- Rust 1.88 or newer;
+- Rust 1.89 or newer;
 - PostgreSQL 17 (the development Compose file supplies it);
 - Node.js 22.13 or newer for the web interface;
 - one Wcash RPC endpoint for the selected Wcash network; and

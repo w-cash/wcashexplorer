@@ -1,7 +1,9 @@
 use chrono::Utc;
 use futures::future::join_all;
 use sha2::{Digest, Sha256};
-use wcash_zcash_aux::{AuxPowProof, PARENT_HEADER_BYTES, PROOF_MAGIC, Target};
+use wcash_zcash_aux::{AuxPowProof, PARENT_HEADER_BYTES, PROOF_MAGIC, ParentCoinbaseRules, Target};
+
+use zebra_chain::{block::Height, parameters::Network};
 
 use crate::{
     error::{ExplorerError, Result},
@@ -10,7 +12,7 @@ use crate::{
 };
 
 const WITNESS_HASH_DOMAIN: &[u8] = b"WcashExplorer/AuxPoW-witness/v1\0";
-const VERIFIER_VERSION: &str = "wcash-zcash-aux@45393319";
+const VERIFIER_VERSION: &str = "wcash-zcash-aux@9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a";
 const SOLUTION_OFFSET: usize = 140;
 
 /// Performs local consensus verification plus exact Wcash and parent-chain lookups.
@@ -18,11 +20,23 @@ const SOLUTION_OFFSET: usize = 140;
 pub struct AuxPowVerifier {
     wcash: ZebraRpc,
     parents: Vec<ZebraRpc>,
+    network: Network,
 }
 
 impl AuxPowVerifier {
-    pub fn new(wcash: ZebraRpc, parents: Vec<ZebraRpc>) -> Self {
-        Self { wcash, parents }
+    /// Binds proof rules to a Wcash profile; Mainnet requires its frozen genesis.
+    /// The indexer separately checks that its RPC serves this identity before indexing.
+    pub fn new(
+        wcash: ZebraRpc,
+        parents: Vec<ZebraRpc>,
+        network_id: &str,
+        genesis_hash: &str,
+    ) -> Result<Self> {
+        Ok(Self {
+            wcash,
+            parents,
+            network: consensus_network(network_id, genesis_hash)?,
+        })
     }
 
     /// Returns `None` only for the genesis block, whose solution is native genesis work.
@@ -31,6 +45,7 @@ impl AuxPowVerifier {
         block: &RpcBlock,
         raw_block: &[u8],
     ) -> Result<Option<VerifiedAuxPow>> {
+        let parent_rules = parent_rules_at_height(&self.network, block.height)?;
         let proof_bytes = decode_hex("Wcash solution", &block.solution, 256 * 1024)?;
         let raw_solution = solution_from_raw_block(raw_block)?;
         if raw_solution != proof_bytes {
@@ -52,7 +67,7 @@ impl AuxPowVerifier {
         let child_hash = parse_display_hash(&block.hash)?;
         let required_target = compact_target(&block.bits)?;
         let validated = proof
-            .validate(child_hash, required_target)
+            .validate_with_parent_rules(child_hash, required_target, parent_rules)
             .map_err(|error| ExplorerError::InvalidAuxPow(error.to_string()))?;
 
         let parent_header = proof.parent_header();
@@ -106,6 +121,50 @@ impl AuxPowVerifier {
             parent_sources_agree,
         }))
     }
+}
+
+/// Select a built-in profile; only frozen Wcash Mainnet can activate NU7.
+fn consensus_network(network_id: &str, genesis_hash: &str) -> Result<Network> {
+    let network = match network_id {
+        "mainnet" => Network::try_new_wcash_mainnet()
+            .map_err(|error| ExplorerError::Config(error.to_string()))?,
+        "testnet" => Network::new_wcash_testnet(),
+        _ => {
+            return Err(ExplorerError::Config(format!(
+                "unsupported Wcash verifier network: {network_id}"
+            )));
+        }
+    };
+    let Network::Testnet(parameters) = &network else {
+        return Err(ExplorerError::Config(
+            "Wcash verifier requires a built-in Wcash consensus profile".to_owned(),
+        ));
+    };
+    // Testnet keeps its existing configured genesis and RPC identity checks.
+    // It never enables NU7, including for historical Testnet profiles.
+    if network.is_wcash_mainnet() && parameters.genesis_hash().to_string() != genesis_hash {
+        return Err(ExplorerError::Config(format!(
+            "Wcash verifier genesis does not match the built-in {network_id} profile"
+        )));
+    }
+    Ok(network)
+}
+
+/// Derive policy from this block, never the latest tip, wall clock or cached policy.
+/// This also restores legacy rules when a reorg revisits a pre-activation height.
+fn parent_rules_at_height(network: &Network, height: u64) -> Result<ParentCoinbaseRules> {
+    let height = u32::try_from(height)
+        .ok()
+        .and_then(|height| Height::try_from(height).ok())
+        .ok_or_else(|| {
+            ExplorerError::InvalidAuxPow("Wcash block height is out of range".to_owned())
+        })?;
+    Ok(ParentCoinbaseRules::for_candidate_height(
+        height.0,
+        network
+            .wcash_nu7_parent_activation_height()
+            .map(|height| height.0),
+    ))
 }
 
 async fn observe_parent(
@@ -446,11 +505,17 @@ mod tests {
         )
         .expect("valid fixture RPC client");
 
-        let verified = AuxPowVerifier::new(wcash, Vec::new())
-            .verify(&block, &raw_block)
-            .await
-            .expect("valid Wcash-only AuxPoW verification")
-            .expect("non-genesis proof");
+        let verified = AuxPowVerifier::new(
+            wcash,
+            Vec::new(),
+            "testnet",
+            zebra_chain::block::genesis::WCASH_TESTNET_GENESIS_HASH,
+        )
+        .expect("valid Testnet verifier identity")
+        .verify(&block, &raw_block)
+        .await
+        .expect("valid Wcash-only AuxPoW verification")
+        .expect("non-genesis proof");
         assert_eq!(verified.verification_state, "auxpow_verified");
         assert_eq!(verified.exact_witness_state, "best_chain");
         assert_eq!(verified.witness_confirmations, Some(48));
@@ -461,6 +526,229 @@ mod tests {
         assert!(!verified.parent_sources_agree);
         assert!(verified.parent_observations.is_empty());
 
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[test]
+    fn parent_policy_uses_verified_mainnet_identity_and_each_child_height() {
+        let mainnet = consensus_network(
+            "mainnet",
+            zebra_chain::block::genesis::WCASH_MAINNET_GENESIS_HASH,
+        )
+        .expect("frozen Mainnet identity");
+        // Revisit a historical height after crossing activation, as during a reorg.
+        for (height, expected) in [
+            (51_349, ParentCoinbaseRules::Legacy),
+            (51_350, ParentCoinbaseRules::LegacyAndNu7),
+            (51_351, ParentCoinbaseRules::LegacyAndNu7),
+            (51_349, ParentCoinbaseRules::Legacy),
+        ] {
+            assert_eq!(parent_rules_at_height(&mainnet, height).unwrap(), expected);
+        }
+        let testnet = consensus_network(
+            "testnet",
+            "0271b5b0a10b2838f43cccdec9ca2f72aa72a7c103830082bac8f82f47f0593a",
+        )
+        .expect("existing Testnet identity retains legacy rules");
+        for height in [0, 51_349, 51_350, 51_351, u64::from(Height::MAX.0)] {
+            assert_eq!(
+                parent_rules_at_height(&testnet, height).unwrap(),
+                ParentCoinbaseRules::Legacy
+            );
+        }
+        assert!(consensus_network("mainnet", &"00".repeat(32)).is_err());
+        assert!(
+            consensus_network(
+                "mainnet",
+                zebra_chain::block::genesis::WCASH_TESTNET_GENESIS_HASH
+            )
+            .is_err()
+        );
+        assert!(consensus_network("unknown", &"00".repeat(32)).is_err());
+        for height in [
+            u64::from(Height::MAX.0) + 1,
+            u64::from(u32::MAX) + 1,
+            u64::MAX,
+        ] {
+            assert!(parent_rules_at_height(&mainnet, height).is_err());
+        }
+    }
+
+    async fn witness_status_fixture() -> (
+        ZebraRpc,
+        tokio::task::JoinHandle<()>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use axum::extract::State;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        async fn status(
+            State(calls): State<Arc<AtomicUsize>>,
+            Json(request): Json<Value>,
+        ) -> Json<Value> {
+            assert_eq!(request["method"], "getauxblockstatus");
+            calls.fetch_add(1, Ordering::SeqCst);
+            Json(json!({
+                "jsonrpc": "2.0", "id": request["id"],
+                "result": {"state": "best_chain", "confirmations": 1}, "error": null
+            }))
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = Router::new()
+            .route("/", post(status))
+            .with_state(calls.clone());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let rpc = ZebraRpc::new(
+            RpcConfig {
+                label: "local-witness-fixture".to_owned(),
+                url: format!("http://{address}/").parse().unwrap(),
+                auth: RpcAuth::None,
+            },
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        (rpc, server, calls)
+    }
+
+    fn nu7_fixture(encoded: &str) -> (RpcBlock, Vec<u8>) {
+        let metadata: Value = serde_json::from_str(encoded).unwrap();
+        let raw = hex::decode(metadata["child_block_hex"].as_str().unwrap()).unwrap();
+        let child_hash: [u8; 32] = hex::decode(metadata["child_hash_le"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let bits = u32::from_le_bytes(raw[104..108].try_into().unwrap());
+        let block = serde_json::from_value(json!({
+            "hash": display_hash(child_hash), "height": 51_350,
+            "confirmations": 1, "size": raw.len(), "time": 1,
+            "bits": format!("{bits:08x}"), "difficulty": 1,
+            "nonce": "00".repeat(32),
+            "solution": hex::encode(solution_from_raw_block(&raw).unwrap()),
+            "merkleroot": "00".repeat(32)
+        }))
+        .unwrap();
+        (block, raw)
+    }
+
+    #[tokio::test]
+    async fn verifies_nu7_v5_and_v6_only_at_mainnet_activation_and_rolls_back_policy() {
+        use std::sync::atomic::Ordering;
+        let (rpc, server, calls) = witness_status_fixture().await;
+        let verifier = AuxPowVerifier::new(
+            rpc.clone(),
+            Vec::new(),
+            "mainnet",
+            zebra_chain::block::genesis::WCASH_MAINNET_GENESIS_HASH,
+        )
+        .unwrap();
+        let testnet = AuxPowVerifier::new(
+            rpc,
+            Vec::new(),
+            "testnet",
+            zebra_chain::block::genesis::WCASH_TESTNET_GENESIS_HASH,
+        )
+        .unwrap();
+        for encoded in [
+            include_str!("../tests/fixtures/nu7/nu7-v5-wec-only.json"),
+            include_str!("../tests/fixtures/nu7/nu7-v6-wec-only.json"),
+        ] {
+            let (mut block, raw) = nu7_fixture(encoded);
+            for height in [51_349, 51_350, 51_351, 51_349] {
+                block.height = height;
+                let before = calls.load(Ordering::SeqCst);
+                let result = verifier.verify(&block, &raw).await;
+                if height < 51_350 {
+                    assert!(matches!(result, Err(ExplorerError::InvalidAuxPow(_))));
+                    assert_eq!(calls.load(Ordering::SeqCst), before);
+                } else {
+                    let evidence = result.unwrap().unwrap();
+                    assert_eq!(evidence.verifier_version, VERIFIER_VERSION);
+                    assert_eq!(evidence.exact_witness_state, "best_chain");
+                    assert_eq!(
+                        evidence.parent_lookup_state,
+                        ParentLookupState::NotConfigured
+                    );
+                }
+            }
+            block.height = 51_351;
+            assert!(testnet.verify(&block, &raw).await.is_err());
+            // Policy must not bypass the child commitment or real Equihash checks.
+            block.hash = "ff".repeat(32);
+            let before = calls.load(Ordering::SeqCst);
+            assert!(verifier.verify(&block, &raw).await.is_err());
+            assert_eq!(calls.load(Ordering::SeqCst), before);
+
+            let (mut block, mut raw) = nu7_fixture(encoded);
+            let mut solution = solution_from_raw_block(&raw).unwrap();
+            let proof = AuxPowProof::decode(&solution).unwrap();
+            let header_offset = solution
+                .windows(PARENT_HEADER_BYTES)
+                .position(|bytes| bytes == proof.parent_header().as_bytes())
+                .unwrap();
+            let solution_offset = raw
+                .windows(solution.len())
+                .position(|bytes| bytes == solution)
+                .unwrap();
+            // Keep the hash under the same easy fixture target, so failure must
+            // reach Equihash rather than stopping at the earlier target check.
+            let original = solution[header_offset + 108];
+            let target = compact_target(&block.bits).unwrap();
+            let changed = (1..=u8::MAX).any(|delta| {
+                solution[header_offset + 108] = original ^ delta;
+                AuxPowProof::decode(&solution)
+                    .unwrap()
+                    .parent_header()
+                    .check_target(target)
+                    .is_ok()
+            });
+            assert!(
+                changed,
+                "bounded fixture nonce change meeting the hash target"
+            );
+            raw[solution_offset..solution_offset + solution.len()].copy_from_slice(&solution);
+            block.solution = hex::encode(solution);
+            let error = verifier.verify(&block, &raw).await.unwrap_err();
+            assert!(error.to_string().contains("Equihash"), "{error}");
+            assert_eq!(calls.load(Ordering::SeqCst), before);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn preserves_historical_legacy_proofs_on_both_sides_of_activation() {
+        let raw = hex::decode(include_str!("../tests/fixtures/wcash-testnet-block-1.hex").trim())
+            .unwrap();
+        let mut block: RpcBlock = serde_json::from_value(json!({
+            "hash": "79cdcea38a54f99a59adddf124490a65de499e5677e693caa14dcf24b5f96007",
+            "height": 1, "confirmations": 48, "size": raw.len(), "time": 1,
+            "bits": "1e008859", "difficulty": 1, "nonce": "00".repeat(32),
+            "solution": hex::encode(solution_from_raw_block(&raw).unwrap()),
+            "merkleroot": "00".repeat(32)
+        }))
+        .unwrap();
+        let (rpc, server, _) = witness_status_fixture().await;
+        let verifier = AuxPowVerifier::new(
+            rpc,
+            Vec::new(),
+            "mainnet",
+            zebra_chain::block::genesis::WCASH_MAINNET_GENESIS_HASH,
+        )
+        .unwrap();
+        // The real legacy proof has synthetic Mainnet height context in this test.
+        for height in [1, 51_349, 51_350, 51_351, 51_349] {
+            block.height = height;
+            assert!(verifier.verify(&block, &raw).await.unwrap().is_some());
+        }
         server.abort();
         let _ = server.await;
     }
