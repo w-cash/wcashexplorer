@@ -2,7 +2,7 @@
 name = "wcashexplorer"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 description = "Reorg-safe Wcash block indexer and explorer API"
 repository = "https://github.com/w-cash/wcashexplorer"
@@ -29,12 +29,22 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = { version = "2.5", features = ["serde"] }
 uuid = { version = "1.18", features = ["serde", "v4"] }
-wcash-zcash-aux = { git = "https://github.com/w-cash/wolf", rev = "45393319d24c3c3181f98d503c97a315661b59af", features = ["zebra"] }
-zebra-chain = { git = "https://github.com/w-cash/wolf", rev = "45393319d24c3c3181f98d503c97a315661b59af", features = ["wcash-consensus"] }
+wcash-zcash-aux = { git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", features = ["zebra"] }
+zebra-chain = { git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", features = ["wcash-consensus"] }
 
 [patch.crates-io]
-zcash_primitives = { git = "https://github.com/w-cash/wolf", rev = "45393319d24c3c3181f98d503c97a315661b59af" }
-zcash_protocol = { git = "https://github.com/w-cash/wolf", rev = "45393319d24c3c3181f98d503c97a315661b59af" }
+# Keep Wcash legacy domains and the isolated NU7 parent dependencies on the same
+# reviewed Wolf revision. Dependency-workspace patch tables are not inherited.
+zcash_primitives = { git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", version = "=0.30.1" }
+zcash_protocol = { git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", version = "=0.10.5" }
+aead_nu7 = { package = "aead", git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", version = "=0.6.1" }
+cipher_nu7 = { package = "cipher", git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", version = "=0.5.2" }
+curve25519_dalek_nu7 = { package = "curve25519-dalek", git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", version = "=5.0.0" }
+ed25519_zebra_nu7 = { package = "ed25519-zebra", git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", version = "=5.0.0" }
+universal_hash_nu7 = { package = "universal-hash", git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", version = "=0.6.1" }
+zcash_script_nu7 = { package = "zcash_script", git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", version = "=0.6.0" }
+zcash_transparent_nu7 = { package = "zcash_transparent", git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", version = "=0.11.0" }
+zcash_address_nu7 = { package = "zcash_address", git = "https://github.com/w-cash/wolf", rev = "9ea02e480d1583dfb26ef2ad46ee3ee7e84d1f8a", version = "=0.14.0" }
 
 [dev-dependencies]
 pretty_assertions = "1.4"

@@ -51,7 +51,13 @@ async fn main() -> anyhow::Result<()> {
                 })?;
         }
     }
-    let auxpow = AuxPowVerifier::new(wcash.clone(), parents);
+    let auxpow = AuxPowVerifier::new(
+        wcash.clone(),
+        parents,
+        &config.network.id,
+        &config.network.genesis_hash,
+    )
+    .context("could not bind AuxPoW verification to the configured Wcash network")?;
 
     let indexer_handle = config.run_indexer.then(|| {
         let indexer = Indexer::new(
